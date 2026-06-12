@@ -2,6 +2,8 @@
 (setq *SCRIPT_VERSION* "0.2")
 (princ "\nInformation: Script Outils SNCF développé par Dawson AILLAUD - SNCF Réseau TL MOB")
 
+(setq *S_UPDATE_UNIQUE_ID* "SNCF_BRICSCAD_AUTOUPDATE_2026_06_12")
+
 ;; ------------------------------------------------------------------------------------ F_UTILS ------------------------------------------------------------------------------------
 
 (defun make-layer (name color /)
