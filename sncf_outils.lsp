@@ -3,7 +3,7 @@
 (setq *S_SCRIPT_VERSION* "0.2")
 (princ "\nInformation: Script Outils SNCF développé par Dawson AILLAUD - SNCF Réseau TL MOB")
 
-(vl-load-com)
+;; ------------------------------------------------------------------------------------ F_MAJ ------------------------------------------------------------------------------------
 
 (defun SMAJ:read-file (path / f line txt)
   (setq txt "")
@@ -7163,3 +7163,4 @@
 
 (stab_regapp)
 (stab_start_reactor)
+
