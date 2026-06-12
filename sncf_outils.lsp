@@ -1,7 +1,7 @@
 (vl-load-com)
 (setq *S_SCRIPT_VERSION* "0.2")
 (princ "\nInformation: Script Outils SNCF développé par Dawson AILLAUD - SNCF Réseau TL MOB")
-
+qq
 ; ============================================================
 ; AUTO-UPDATE LISP DEPUIS GITHUB
 ; PowerShell non bloquant + anti-cache GitHub
