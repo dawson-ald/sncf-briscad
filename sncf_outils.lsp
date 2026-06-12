@@ -968,14 +968,36 @@
   (princ)
 )
 
-;; ------------------------------------------------------------------------------------ C_O_CENTRE_TXT2PTS ------------------------------------------------------------------------------------
+;; ------------------------------------------------------------------------------------ C_O_CENTRE_TXT ------------------------------------------------------------------------------------
 
-(defun c:O_CENTRE_TXT2PTS (/ p1 p2 txt mid ang haut choix layer)
+(defun c:O_CENTRE_TXT (/ mode p1 p2 p3 p4 pts txt mid ang haut choix layer)
+
   (setq layer "0")
 
-  (setq p1 (getpoint "\nPremier point : "))
-  (setq p2 (getpoint "\nDeuxieme point : "))
+  ;; Choix du mode
+  (initget "2 4")
+  (setq mode (getkword "\nCentrer le texte avec combien de points ? [2/4] <2> : "))
 
+  (if (null mode)
+    (setq mode "2")
+  )
+
+  ;; Sélection des points
+  (cond
+    ((= mode "2")
+      (setq p1 (getpoint "\nPremier point : "))
+      (setq p2 (getpoint "\nDeuxieme point : "))
+    )
+
+    ((= mode "4")
+      (setq p1 (getpoint "\nPoint 1 : "))
+      (setq p2 (getpoint "\nPoint 2 : "))
+      (setq p3 (getpoint "\nPoint 3 : "))
+      (setq p4 (getpoint "\nPoint 4 : "))
+    )
+  )
+
+  ;; Choix TEXT / MTEXT
   (initget "T M")
   (setq choix (getkword "\nType de texte ? [Text/Mtext] <M> : "))
 
@@ -983,26 +1005,45 @@
     (setq choix "M")
   )
 
+  ;; Texte
   (setq txt (getstring T "\nTexte a placer : "))
+
+  ;; Hauteur
   (setq haut (getreal "\nHauteur du texte <2.5> : "))
 
   (if (null haut)
     (setq haut 2.5)
   )
 
-  ;; Milieu entre les deux points
-  (setq mid
-    (list
-      (/ (+ (car p1) (car p2)) 2.0)
-      (/ (+ (cadr p1) (cadr p2)) 2.0)
-      0.0
+  ;; Calcul du centre
+  (cond
+    ((= mode "2")
+      (setq mid
+        (list
+          (/ (+ (car p1) (car p2)) 2.0)
+          (/ (+ (cadr p1) (cadr p2)) 2.0)
+          0.0
+        )
+      )
+    )
+
+    ((= mode "4")
+      (setq mid
+        (list
+          (/ (+ (car p1) (car p2) (car p3) (car p4)) 4.0)
+          (/ (+ (cadr p1) (cadr p2) (cadr p3) (cadr p4)) 4.0)
+          0.0
+        )
+      )
     )
   )
 
-  ;; Angle entre les deux points
+  ;; Angle du texte selon l'axe point 1 -> point 2
   (setq ang (angle p1 p2))
 
+  ;; Création du texte
   (cond
+
     ;; TEXT simple
     ((= choix "T")
       (entmakex
@@ -1033,82 +1074,6 @@
           (cons 50 ang)
           (cons 7 (getvar "TEXTSTYLE"))
           (cons 71 5) ;; attachement milieu centre
-          (cons 72 5) ;; direction gauche vers droite
-        )
-      )
-    )
-  )
-
-  (princ)
-)
-
-;; ------------------------------------------------------------------------------------ C_O_CENTRE_TXT4PTS ------------------------------------------------------------------------------------
-
-(defun c:O_CENTRE_TXT4PTS (/ p1 p2 p3 p4 txt mid ang haut choix layer)
-  (setq layer "0")
-
-  (setq p1 (getpoint "\nPoint 1 : "))
-  (setq p2 (getpoint "\nPoint 2 : "))
-  (setq p3 (getpoint "\nPoint 3 : "))
-  (setq p4 (getpoint "\nPoint 4 : "))
-
-  (initget "T M")
-  (setq choix (getkword "\nType de texte ? [Text/Mtext] <M> : "))
-
-  (if (null choix)
-    (setq choix "M")
-  )
-
-  (setq txt (getstring T "\nTexte a placer : "))
-  (setq haut (getreal "\nHauteur du texte <2.5> : "))
-
-  (if (null haut)
-    (setq haut 2.5)
-  )
-
-  ;; Centre entre les 4 points
-  (setq mid
-    (list
-      (/ (+ (car p1) (car p2) (car p3) (car p4)) 4.0)
-      (/ (+ (cadr p1) (cadr p2) (cadr p3) (cadr p4)) 4.0)
-      0.0
-    )
-  )
-
-  ;; Rotation du texte selon l'axe entre le point 1 et le point 2
-  (setq ang (angle p1 p2))
-
-  (cond
-    ;; TEXT simple
-    ((= choix "T")
-      (entmakex
-        (list
-          '(0 . "TEXT")
-          (cons 8 layer)
-          (cons 10 mid)
-          (cons 11 mid)
-          (cons 40 haut)
-          (cons 1 txt)
-          (cons 50 ang)
-          (cons 7 (getvar "TEXTSTYLE"))
-          (cons 72 1) ;; centre horizontal
-          (cons 73 2) ;; milieu vertical
-        )
-      )
-    )
-
-    ;; MTEXT
-    ((= choix "M")
-      (entmakex
-        (list
-          '(0 . "MTEXT")
-          (cons 8 layer)
-          (cons 10 mid)
-          (cons 40 haut)
-          (cons 1 txt)
-          (cons 50 ang)
-          (cons 7 (getvar "TEXTSTYLE"))
-          (cons 71 5) ;; milieu centre
           (cons 72 5)
         )
       )
@@ -1183,73 +1148,7 @@
   (princ)
 )
 
-;; ------------------------------------------------------------------------------------ C_O_REMP_TXT ------------------------------------------------------------------------------------
-
-(defun replace-string (old new str / pos lenold result)
-  (setq lenold (strlen old))
-  (setq result "")
-
-  (while (setq pos (vl-string-search old str))
-    (setq result (strcat result (substr str 1 pos) new))
-    (setq str (substr str (+ pos lenold 1)))
-  )
-
-  (strcat result str)
-)
-
-(defun c:O_REMP_TXT (/ ss old new i ent data type txt newtxt)
-  (vl-load-com)
-
-  (setq old (getstring T "\nTexte a remplacer : "))
-
-  (if (= old "")
-    (progn
-      (princ "\nErreur : le texte a remplacer ne peut pas etre vide.")
-      (exit)
-    )
-  )
-
-  (setq new (getstring T "\nNouveau texte : "))
-
-  (princ "\nSelectionner les TEXT / MTEXT a modifier : ")
-  (setq ss (ssget '((0 . "TEXT,MTEXT"))))
-
-  (if ss
-    (progn
-      (setq i 0)
-
-      (while (< i (sslength ss))
-        (setq ent (ssname ss i))
-        (setq data (entget ent))
-        (setq type (cdr (assoc 0 data)))
-        (setq txt (cdr (assoc 1 data)))
-
-        (if txt
-          (progn
-            (setq newtxt (replace-string old new txt))
-
-            (if (/= txt newtxt)
-              (progn
-                (setq data (subst (cons 1 newtxt) (assoc 1 data) data))
-                (entmod data)
-                (entupd ent)
-              )
-            )
-          )
-        )
-
-        (setq i (1+ i))
-      )
-
-      (princ "\nRemplacement termine.")
-    )
-    (princ "\nAucun TEXT ou MTEXT selectionne.")
-  )
-
-  (princ)
-)
-
-;; ------------------------------------------------------------------------------------ C_O_TXT_MAJ / C_O_TXT_MIN / C_O_TXT_CAP / C_O_TXT_SUPP_ESP ------------------------------------------------------------------------------------
+;; ------------------------------------------------------------------------------------ C_O_TXT ------------------------------------------------------------------------------------
 
 (defun upper-fr (c)
   (cond
@@ -1380,6 +1279,23 @@
   (trim-spaces result)
 )
 
+(defun remove-all-spaces (s / i c result)
+  (setq i 1)
+  (setq result "")
+
+  (while (<= i (strlen s))
+    (setq c (substr s i 1))
+
+    (if (not (space-char-p c))
+      (setq result (strcat result c))
+    )
+
+    (setq i (1+ i))
+  )
+
+  result
+)
+
 (defun str-upper-fr (s / i c r)
   (setq i 1)
   (setq r "")
@@ -1418,7 +1334,6 @@
 
     (cond
 
-      ;; Code MTEXT commencant par "\"
       ((= c "\\")
         (setq code "\\")
         (setq i (1+ i))
@@ -1430,13 +1345,11 @@
             (setq i (1+ i))
 
             (cond
-              ;; Retour ligne MTEXT : \P
               ((or (= c2 "P") (= c2 "p"))
                 (setq result (strcat result code))
                 (setq nextCap T)
               )
 
-              ;; Codes MTEXT simples : \L \l \O \o \K \k
               ((or
                  (= c2 "L") (= c2 "l")
                  (= c2 "O") (= c2 "o")
@@ -1445,7 +1358,6 @@
                 (setq result (strcat result code))
               )
 
-              ;; Autres codes MTEXT avec ; exemple \A1; \fArial; \H2.5x;
               (T
                 (while
                   (and
@@ -1475,27 +1387,23 @@
         )
       )
 
-      ;; Accolades MTEXT
       ((or (= c "{") (= c "}"))
         (setq result (strcat result c))
         (setq i (1+ i))
       )
 
-      ;; Separateur
       ((separator-char-p c)
         (setq result (strcat result c))
         (setq nextCap T)
         (setq i (1+ i))
       )
 
-      ;; Premiere lettre du mot
       (nextCap
         (setq result (strcat result (upper-fr c)))
         (setq nextCap nil)
         (setq i (1+ i))
       )
 
-      ;; Reste du mot
       (T
         (setq result (strcat result (lower-fr c)))
         (setq i (1+ i))
@@ -1504,6 +1412,18 @@
   )
 
   result
+)
+
+(defun replace-string (old new str / pos lenold result)
+  (setq lenold (strlen old))
+  (setq result "")
+
+  (while (setq pos (vl-string-search old str))
+    (setq result (strcat result (substr str 1 pos) new))
+    (setq str (substr str (+ pos lenold 1)))
+  )
+
+  (strcat result str)
 )
 
 (defun get-text-value (ent / obj)
@@ -1544,13 +1464,21 @@
                 (setq newtxt (capitalize-text-safe oldtxt))
               )
 
-              ((= mode "ESP")
+              ((= mode "ESP_TROP")
                 (setq newtxt (collapse-spaces oldtxt))
+              )
+
+              ((= mode "ESP_TOUT")
+                (setq newtxt (remove-all-spaces oldtxt))
               )
             )
 
-            (set-text-value ent newtxt)
-            (setq count (1+ count))
+            (if (/= oldtxt newtxt)
+              (progn
+                (set-text-value ent newtxt)
+                (setq count (1+ count))
+              )
+            )
           )
         )
 
@@ -1571,24 +1499,125 @@
   (princ)
 )
 
-;; =========================================================
-;; COMMANDES
-;; =========================================================
+(defun apply-spaces-to-text-selection (/ choix mode)
+  (initget "TO TR")
+  (setq choix
+    (getkword
+      "\nType de suppression des espaces [TOut/TRop] <TR> : "
+    )
+  )
 
-(defun c:O_TXT_MAJ ()
-  (apply-to-text-selection "MAJ")
+  (if (null choix)
+    (setq choix "TR")
+  )
+
+  (cond
+    ((= choix "TO")
+      (setq mode "ESP_TOUT")
+    )
+
+    ((= choix "TR")
+      (setq mode "ESP_TROP")
+    )
+  )
+
+  (apply-to-text-selection mode)
 )
 
-(defun c:O_TXT_MIN ()
-  (apply-to-text-selection "MIN")
+(defun apply-replace-to-text-selection (/ ss old new i ent oldtxt newtxt count)
+  (vl-load-com)
+
+  (setq old (getstring T "\nTexte a remplacer : "))
+
+  (if (= old "")
+    (progn
+      (princ "\nErreur : le texte a remplacer ne peut pas etre vide.")
+      (exit)
+    )
+  )
+
+  (setq new (getstring T "\nNouveau texte : "))
+
+  (princ "\nSelectionner les TEXT / MTEXT a modifier : ")
+  (setq ss (ssget '((0 . "TEXT,MTEXT"))))
+  (setq count 0)
+
+  (if ss
+    (progn
+      (setq i 0)
+
+      (while (< i (sslength ss))
+        (setq ent (ssname ss i))
+        (setq oldtxt (get-text-value ent))
+
+        (if oldtxt
+          (progn
+            (setq newtxt (replace-string old new oldtxt))
+
+            (if (/= oldtxt newtxt)
+              (progn
+                (set-text-value ent newtxt)
+                (setq count (1+ count))
+              )
+            )
+          )
+        )
+
+        (setq i (1+ i))
+      )
+
+      (princ
+        (strcat
+          "\nRemplacement termine. "
+          (itoa count)
+          " texte(s) modifie(s)."
+        )
+      )
+    )
+    (princ "\nAucun TEXT ou MTEXT selectionne.")
+  )
+
+  (princ)
 )
 
-(defun c:O_TXT_CAP ()
-  (apply-to-text-selection "CAP")
-)
 
-(defun c:O_TXT_SUPP_ESP ()
-  (apply-to-text-selection "ESP")
+(defun c:O_TXT (/ choix)
+  (vl-load-com)
+
+  (initget "MA MI C E R")
+  (setq choix
+    (getkword
+      "\nAction sur le texte [MAjuscule/MInuscule/Capitaliser/Espaces/Remplacer] <C> : "
+    )
+  )
+
+  (if (null choix)
+    (setq choix "C")
+  )
+
+  (cond
+    ((= choix "MA")
+      (apply-to-text-selection "MAJ")
+    )
+
+    ((= choix "MI")
+      (apply-to-text-selection "MIN")
+    )
+
+    ((= choix "C")
+      (apply-to-text-selection "CAP")
+    )
+
+    ((= choix "E")
+      (apply-spaces-to-text-selection)
+    )
+
+    ((= choix "R")
+      (apply-replace-to-text-selection)
+    )
+  )
+
+  (princ)
 )
 
 ;; ------------------------------------------------------------------------------------ C_S_CAMERA ------------------------------------------------------------------------------------
@@ -2869,7 +2898,7 @@
   )
 )
 
-(defun c:S_CAMERA_CDV (/ vals base rot)
+(defun SC3D:CMD-CREER (/ vals base rot)
   (setq vals (SC3D:DIALOG nil))
 
   (if vals
@@ -2889,7 +2918,7 @@
   (princ)
 )
 
-(defun c:S_CAMERA_MOD (/ sel e cfg oldVals newVals ed base oldRot newRot a)
+(defun SC3D:CMD-MODIFIER (/ sel e cfg oldVals newVals ed base oldRot newRot a)
   (setq sel (entsel "\nSelectionner le bloc camera a modifier : "))
 
   (if sel
@@ -2937,7 +2966,7 @@
             (princ "\nImpossible de lire les informations de cette camera.")
           )
         )
-        (princ "\nCe bloc n'est pas une camera generee par S_CAMERA_CDV.")
+        (princ "\nCe bloc n'est pas une camera generee par S_CAMERA.")
       )
     )
   )
@@ -3079,7 +3108,7 @@
   )
 )
 
-(defun c:S_CAMERA_AJT (/ cam cams out replaced)
+(defun SC3D:CMD-AJOUTER (/ cam cams out replaced)
   (setq cam (SC3D:ADD-CAM-DIALOG))
 
   (if cam
@@ -3199,7 +3228,7 @@
   )
 )
 
-(defun c:S_CAMERA_SUPP (/ target cams out removed)
+(defun SC3D:CMD-SUPPRIMER (/ target cams out removed)
   (setq target (SC3D:DEL-CAM-DIALOG))
 
   (if target
@@ -3224,6 +3253,41 @@
         (princ "\nCamera supprimee.")
         (princ "\nCamera introuvable.")
       )
+    )
+  )
+
+  (princ)
+)
+
+
+(defun SC3D:MENU-CAMERA (/ choix)
+  (initget "C M A S")
+  (setq choix
+    (getkword
+      "\nCamera - action [Creer/Modifier/Ajouter/Supprimer] <C> : "
+    )
+  )
+  (if (null choix)
+    (setq choix "C")
+  )
+  choix
+)
+
+(defun c:S_CAMERA (/ choix)
+  (setq choix (SC3D:MENU-CAMERA))
+
+  (cond
+    ((= choix "C")
+      (SC3D:CMD-CREER)
+    )
+    ((= choix "M")
+      (SC3D:CMD-MODIFIER)
+    )
+    ((= choix "A")
+      (SC3D:CMD-AJOUTER)
+    )
+    ((= choix "S")
+      (SC3D:CMD-SUPPRIMER)
     )
   )
 
@@ -3912,15 +3976,15 @@
   )
 
   ;; Valeur par defaut :
-  ;; vectorizer.exe "C:\Chemin\Image 1.png" "0, 3"
+  ;; vectorizer.exe "C:\Chemin\Image 1.png" "3, 1; 3, 2; 0, 2"
   (setq combinationsArg
     (getstring T
-      "\nCombinaisons model, algo <0, 3> : "
+      "\nCombinaisons model, algo <3, 1; 3, 2; 0, 2> : "
     )
   )
 
   (if (= (SIA:Trim combinationsArg) "")
-    (setq combinationsArg "0, 3")
+    (setq combinationsArg "3, 1; 3, 2; 0, 2")
   )
 
   (setq comboCount (SIA:CountCombinations combinationsArg))
@@ -6142,6 +6206,87 @@
   )
 )
 
+(defun stab_write_dcl_main (/ fn f)
+  (setq fn (vl-filename-mktemp "stab_tableau_main.dcl"))
+  (setq f (open fn "w"))
+
+  (write-line
+"stab_main : dialog {
+  label = \"SNCF - Tableau calques\";
+
+  : boxed_column {
+    label = \"Action\";
+
+    : button {
+      key = \"creer\";
+      label = \"Creer un nouveau tableau\";
+      width = 45;
+      is_default = true;
+    }
+
+    : button {
+      key = \"ajouter\";
+      label = \"Ajouter une ligne\";
+      width = 45;
+    }
+
+    : button {
+      key = \"modifier\";
+      label = \"Modifier une ligne\";
+      width = 45;
+    }
+
+    : button {
+      key = \"supprimer\";
+      label = \"Supprimer une ligne\";
+      width = 45;
+    }
+
+    : button {
+      key = \"maj\";
+      label = \"Mettre a jour tous les tableaux\";
+      width = 45;
+    }
+  }
+
+  spacer;
+
+  cancel_button;
+}"
+    f
+  )
+
+  (close f)
+  fn
+)
+
+(defun stab_main_dialog (/ fn id res)
+  (setq fn (stab_write_dcl_main))
+  (setq id (load_dialog fn))
+
+  (if (not (new_dialog "stab_main" id))
+    (progn
+      (unload_dialog id)
+      (vl-file-delete fn)
+      nil
+    )
+    (progn
+      (action_tile "creer" "(setq res \"CREER\") (done_dialog 1)")
+      (action_tile "ajouter" "(setq res \"AJOUTER\") (done_dialog 1)")
+      (action_tile "modifier" "(setq res \"MODIFIER\") (done_dialog 1)")
+      (action_tile "supprimer" "(setq res \"SUPPRIMER\") (done_dialog 1)")
+      (action_tile "maj" "(setq res \"MAJ\") (done_dialog 1)")
+      (action_tile "cancel" "(setq res nil) (done_dialog 0)")
+
+      (start_dialog)
+
+      (unload_dialog id)
+      (vl-file-delete fn)
+      res
+    )
+  )
+)
+
 (defun stab_write_dcl_row (title / fn f)
   (setq fn (vl-filename-mktemp "stab_tableau_row.dcl"))
   (setq f (open fn "w"))
@@ -6150,8 +6295,9 @@
     (strcat
 "stab_row : dialog {
   label = \"" title "\";
+
   : boxed_column {
-    label = \"Paramètres de la ligne\";
+    label = \"Parametres de la ligne\";
 
     : edit_box {
       label = \"Nom dans le tableau :\";
@@ -6160,7 +6306,7 @@
     }
 
     : popup_list {
-      label = \"Calque à calculer :\";
+      label = \"Calque a calculer :\";
       key = \"calque\";
       width = 48;
     }
@@ -6186,14 +6332,14 @@
     }
 
     : edit_box {
-      label = \"Marge en %, optionnel (ex. +20 ou -20) :\";
+      label = \"Marge en %, optionnel, exemple +20 ou -20 :\";
       key = \"marge\";
       edit_width = 12;
       value = \"0\";
     }
 
     : text {
-      label = \"Pour m³ : volume = surface du calque × multiplicateur.\";
+      label = \"Pour m3 : volume = surface du calque x multiplicateur.\";
     }
   }
 
@@ -6604,13 +6750,6 @@
   )
 )
 
-(defun stab_strlen (s)
-  (if s
-    (strlen s)
-    0
-  )
-)
-
 (defun stab_visual_strlen (s / i c n)
   (setq n 0.0)
   (if (not s) (setq s ""))
@@ -6684,7 +6823,7 @@
           (cons 40 h)
           (cons 1 txt)
           '(7 . "STANDARD")
-          '(72 . 5) ;; FIT
+          '(72 . 5)
           '(73 . 2)
         )
       )
@@ -6729,9 +6868,7 @@
 
 (defun stab_make_block_def
   (
-    bname
-    rows
-    /
+    bname rows /
     h rh th n y
     w1 w2 w3 w4 w5 w6 w7 w8 w9 w10
     x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11
@@ -6740,19 +6877,13 @@
     charW padding
   )
 
-  ;; Taille compacte
   (setq rh 0.55)
   (setq th 0.16)
-
-  ;; Largeur moyenne par unite de texte.
   (setq charW 0.125)
   (setq padding 0.55)
-
-  ;; Nombre de lignes
   (setq n (+ 1 (length rows)))
   (setq h (* rh n))
 
-  ;; Textes pour calculer les largeurs
   (setq col1 (list "Designation"))
   (setq col2 (list "Calque"))
   (setq col3 (list "Type"))
@@ -6804,7 +6935,6 @@
     (setq col10 (cons ptMargeTxt col10))
   )
 
-  ;; Largeurs automatiques.
   (setq w1  (stab_col_width_from_strings col1  3.00 charW padding))
   (setq w2  (stab_col_width_from_strings col2  3.00 charW padding))
   (setq w3  (stab_col_width_from_strings col3  1.20 charW padding))
@@ -6816,7 +6946,6 @@
   (setq w9  (stab_col_width_from_strings col9  1.80 charW padding))
   (setq w10 (stab_col_width_from_strings col10 2.60 charW padding))
 
-  ;; Positions X cumulées
   (setq x1 0.0)
   (setq x2 (+ x1 w1))
   (setq x3 (+ x2 w2))
@@ -6829,7 +6958,6 @@
   (setq x10 (+ x9 w9))
   (setq x11 (+ x10 w10))
 
-  ;; Creation du bloc
   (entmake
     (list
       '(0 . "BLOCK")
@@ -6839,20 +6967,16 @@
     )
   )
 
-  ;; Cadre haut/bas
   (stab_line (list x1 0.0 0.0) (list x11 0.0 0.0))
   (stab_line (list x1 (- h) 0.0) (list x11 (- h) 0.0))
 
-  ;; Colonnes verticales
   (foreach x (list x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11)
     (stab_line (list x 0.0 0.0) (list x (- h) 0.0))
   )
 
-  ;; Ligne sous entête
   (setq y (- rh))
   (stab_line (list x1 y 0.0) (list x11 y 0.0))
 
-  ;; Entêtes
   (stab_text_cell x1  x2  (- (/ rh 2.0)) th "Designation" nil)
   (stab_text_cell x2  x3  (- (/ rh 2.0)) th "Calque" nil)
   (stab_text_cell x3  x4  (- (/ rh 2.0)) th "Type" nil)
@@ -6864,7 +6988,6 @@
   (stab_text_cell x9  x10 (- (/ rh 2.0)) th "Prix T." nil)
   (stab_text_cell x10 x11 (- (/ rh 2.0)) th "Prix T. marge" nil)
 
-  ;; Lignes du tableau
   (foreach row rows
     (setq lib (nth 0 row))
     (setq lay (nth 1 row))
@@ -6937,7 +7060,7 @@
   ent
 )
 
-(defun stab_insert_table (pt bname rows / ent)
+(defun stab_insert_table (pt bname rows)
   (stab_insert_table_ex pt bname rows 1.0 1.0 1.0 0.0 "0")
 )
 
@@ -6950,7 +7073,6 @@
       (setq bname (cdr (assoc 2 ed)))
       (setq rows (stab_get_rows ent))
 
-      ;; Conservation échelle, rotation et calque du tableau
       (setq sx (cdr (assoc 41 ed)))
       (setq sy (cdr (assoc 42 ed)))
       (setq sz (cdr (assoc 43 ed)))
@@ -7007,11 +7129,7 @@
   (if
     (and
       (not *STAB_BUSY*)
-      (/= cmd "S_TABLEAU_CREER")
-      (/= cmd "S_TABLEAU_AJT")
-      (/= cmd "S_TABLEAU_MOD")
-      (/= cmd "S_TABLEAU_SUPP")
-      (/= cmd "S_TABLEAU_MAJ")
+      (/= cmd "S_TABLEAU")
     )
     (stab_refresh_all)
   )
@@ -7028,11 +7146,23 @@
   )
 )
 
-(defun c:S_TABLEAU_CREER (/ row pt bname)
-  (stab_regapp)
-  (stab_start_reactor)
+(defun stab_pick_table (/ ent)
+  (setq ent (car (entsel "\nSelectionne le bloc tableau : ")))
+  (cond
+    ((not ent)
+      (princ "\nAucun tableau selectionne.")
+      nil
+    )
+    ((not (stab_is_table ent))
+      (princ "\nCe bloc n'est pas un tableau cree par ce script.")
+      nil
+    )
+    (T ent)
+  )
+)
 
-  (setq row (stab_row_dialog nil "SNCF - Créer un tableau"))
+(defun stab_action_creer (/ row pt bname)
+  (setq row (stab_row_dialog nil "SNCF - Creer un tableau"))
 
   (if row
     (progn
@@ -7047,25 +7177,15 @@
       )
     )
   )
-
-  (princ)
 )
 
-(defun c:S_TABLEAU_AJT (/ ent row rows)
-  (stab_regapp)
-  (stab_start_reactor)
+(defun stab_action_ajouter (/ ent row rows)
+  (setq ent (stab_pick_table))
 
-  (setq ent (car (entsel "\nSelectionne le bloc tableau : ")))
-
-  (cond
-    ((not ent)
-      (princ "\nAucun tableau selectionne.")
-    )
-    ((not (stab_is_table ent))
-      (princ "\nCe bloc n'est pas un tableau cree par ce script.")
-    )
-    (T
+  (if ent
+    (progn
       (setq row (stab_row_dialog nil "SNCF - Ajouter une ligne"))
+
       (if row
         (progn
           (setq rows (append (stab_get_rows ent) (list row)))
@@ -7076,24 +7196,13 @@
       )
     )
   )
-
-  (princ)
 )
 
-(defun c:S_TABLEAU_MOD (/ ent rows idx oldRow newRow newRows)
-  (stab_regapp)
-  (stab_start_reactor)
+(defun stab_action_modifier (/ ent rows idx oldRow newRow newRows)
+  (setq ent (stab_pick_table))
 
-  (setq ent (car (entsel "\nSelectionne le bloc tableau : ")))
-
-  (cond
-    ((not ent)
-      (princ "\nAucun tableau selectionne.")
-    )
-    ((not (stab_is_table ent))
-      (princ "\nCe bloc n'est pas un tableau cree par ce script.")
-    )
-    (T
+  (if ent
+    (progn
       (setq rows (stab_get_rows ent))
       (setq idx (stab_select_line_dialog rows "Modifier une ligne du tableau"))
 
@@ -7114,24 +7223,13 @@
       )
     )
   )
-
-  (princ)
 )
 
-(defun c:S_TABLEAU_SUPP (/ ent rows idx newRows)
-  (stab_regapp)
-  (stab_start_reactor)
+(defun stab_action_supprimer (/ ent rows idx newRows)
+  (setq ent (stab_pick_table))
 
-  (setq ent (car (entsel "\nSelectionne le bloc tableau : ")))
-
-  (cond
-    ((not ent)
-      (princ "\nAucun tableau selectionne.")
-    )
-    ((not (stab_is_table ent))
-      (princ "\nCe bloc n'est pas un tableau cree par ce script.")
-    )
-    (T
+  (if ent
+    (progn
       (setq rows (stab_get_rows ent))
 
       (if (<= (length rows) 1)
@@ -7151,16 +7249,39 @@
       )
     )
   )
-
-  (princ)
 )
 
-(defun c:S_TABLEAU_MAJ ()
+(defun stab_action_maj ()
   (stab_refresh_all)
   (princ "\nTableaux mis a jour.")
+)
+
+(defun c:S_TABLEAU (/ choix)
+  (stab_regapp)
+  (stab_start_reactor)
+
+  (setq choix (stab_main_dialog))
+
+  (cond
+    ((= choix "CREER")
+      (stab_action_creer)
+    )
+    ((= choix "AJOUTER")
+      (stab_action_ajouter)
+    )
+    ((= choix "MODIFIER")
+      (stab_action_modifier)
+    )
+    ((= choix "SUPPRIMER")
+      (stab_action_supprimer)
+    )
+    ((= choix "MAJ")
+      (stab_action_maj)
+    )
+  )
+
   (princ)
 )
 
 (stab_regapp)
 (stab_start_reactor)
-
