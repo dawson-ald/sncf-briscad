@@ -2917,7 +2917,7 @@
       txtPt
       0.30
       (SC3D:SUMMARY-TEXT vals)
-      camLayer
+      "SC3D_TEXTES"
       7
       *SC3D_ROT*
     )
