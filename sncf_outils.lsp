@@ -2338,6 +2338,49 @@
   )
 )
 
+(defun SC3D:SAFE-LAYER-NAME (s / bad)
+  ;; Nettoie un nom pour pouvoir l'utiliser comme nom de calque.
+  ;; Caracteres interdits ou penibles remplaces par "_".
+  (if (or (null s) (= s ""))
+    (setq s "CAMERA")
+  )
+  (setq s (strcase s))
+  (setq bad '("<" ">" "/" "\\" "\"" ":" ";" "?" "*" "|" "," "=" "'" "(" ")" "[" "]" "{" "}" "." " "))
+  (foreach c bad
+    (setq s (SC3D:REPL s c "_"))
+  )
+  (while (vl-string-search "__" s)
+    (setq s (SC3D:REPL s "__" "_"))
+  )
+  (if (> (strlen s) 180)
+    (setq s (substr s 1 180))
+  )
+  s
+)
+
+(defun SC3D:CAMERA-LAYER-NAME (vals / manu model raw)
+  ;; Si un modele est choisi, chaque type de camera a son propre calque.
+  ;; Exemple : SC3D_CAMERA_HANWHA_VISION_XNO-6083R
+  (setq manu (cdr (assoc 'manu vals)))
+  (setq model (cdr (assoc 'model vals)))
+
+  (if (and manu model (/= manu "Manuel") (/= model "Manuel"))
+    (progn
+      (setq raw (strcat manu "_" model))
+      (strcat "SC3D_CAMERA_" (SC3D:SAFE-LAYER-NAME raw))
+    )
+    "SC3D_CAMERA"
+  )
+)
+
+(defun SC3D:ACTIVE-CAMERA-LAYER ()
+  (if (and (boundp '*SC3D_ACTIVE_CAMERA_LAYER*) *SC3D_ACTIVE_CAMERA_LAYER*)
+    *SC3D_ACTIVE_CAMERA_LAYER*
+    "SC3D_CAMERA"
+  )
+)
+
+
 (defun SC3D:SETUP-LAYERS ()
   (SC3D:LAYER "SC3D_GRILLE" 8)
   (SC3D:LAYER "SC3D_CAMERA" 2)
@@ -2545,13 +2588,14 @@
   )
 )
 
-(defun SC3D:CAMERA-SYMBOL (camH / s)
+(defun SC3D:CAMERA-SYMBOL (camH / s lay)
   (setq s 0.35)
-  (SC3D:LINE (SC3D:P 0.0 0.0 0.0) (SC3D:P 0.0 0.0 camH) "SC3D_CAMERA" 7)
-  (SC3D:LINE (SC3D:P (- s) (- s) camH) (SC3D:P s (- s) camH) "SC3D_CAMERA" 2)
-  (SC3D:LINE (SC3D:P s (- s) camH) (SC3D:P s s camH) "SC3D_CAMERA" 2)
-  (SC3D:LINE (SC3D:P s s camH) (SC3D:P (- s) s camH) "SC3D_CAMERA" 2)
-  (SC3D:LINE (SC3D:P (- s) s camH) (SC3D:P (- s) (- s) camH) "SC3D_CAMERA" 2)
+  (setq lay (SC3D:ACTIVE-CAMERA-LAYER))
+  (SC3D:LINE (SC3D:P 0.0 0.0 0.0) (SC3D:P 0.0 0.0 camH) lay 7)
+  (SC3D:LINE (SC3D:P (- s) (- s) camH) (SC3D:P s (- s) camH) lay 2)
+  (SC3D:LINE (SC3D:P s (- s) camH) (SC3D:P s s camH) lay 2)
+  (SC3D:LINE (SC3D:P s s camH) (SC3D:P (- s) s camH) lay 2)
+  (SC3D:LINE (SC3D:P (- s) s camH) (SC3D:P (- s) (- s) camH) lay 2)
 )
 
 (defun SC3D:DRAW-FRUSTUM (maxD camH objH tilt tanH tanV / w zc zt zb)
@@ -2832,8 +2876,11 @@
   )
 )
 
-(defun SC3D:CREATE-CAMERA (base vals / calc blockName ins txt txtH cfg rot txtPt)
+(defun SC3D:CREATE-CAMERA (base vals / calc blockName ins txt txtH cfg rot txtPt camLayer)
   (SC3D:SETUP-LAYERS)
+  (setq camLayer (SC3D:CAMERA-LAYER-NAME vals))
+  (SC3D:LAYER camLayer 2)
+  (setq *SC3D_ACTIVE_CAMERA_LAYER* camLayer)
 
   (setq rot (cdr (assoc 'rot vals)))
   (setq *SC3D_BASE* (list (car base) (cadr base) (if (caddr base) (caddr base) 0.0)))
@@ -2852,7 +2899,7 @@
     (entmakex
       (list
         '(0 . "INSERT")
-        (cons 8 "SC3D_CAMERA")
+        (cons 8 camLayer)
         (cons 2 blockName)
         (cons 10 *SC3D_BASE*)
         '(41 . 1.0)
@@ -2870,7 +2917,7 @@
       txtPt
       0.30
       (SC3D:SUMMARY-TEXT vals)
-      "SC3D_TEXTES"
+      camLayer
       7
       *SC3D_ROT*
     )
