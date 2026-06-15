@@ -3611,12 +3611,6 @@
   (princ)
 )
 
-(defun c:S_CAMERA_AJUSTER ()
-  (SC3D:CMD-AJUSTER)
-  (princ)
-)
-
-
 (defun SC3D:MENU-CAMERA (/ choix)
   (initget "C M J A S")
   (setq choix
