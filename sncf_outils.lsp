@@ -2340,7 +2340,6 @@
 
 (defun SC3D:SAFE-LAYER-NAME (s / bad)
   ;; Nettoie un nom pour pouvoir l'utiliser comme nom de calque.
-  ;; Caracteres interdits ou penibles remplaces par "_".
   (if (or (null s) (= s ""))
     (setq s "CAMERA")
   )
@@ -2387,6 +2386,7 @@
   (SC3D:LAYER "SC3D_RAYONS" 4)
   (SC3D:LAYER "SC3D_AXE" 7)
   (SC3D:LAYER "SC3D_TEXTES" 7)
+  (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
   (SC3D:LAYER "SC3D_NON_VISIBLE" 1)
   (SC3D:LAYER "SC3D_PPM_1500" 1)
   (SC3D:LAYER "SC3D_PPM_1000" 6)
@@ -3306,12 +3306,322 @@
   (princ)
 )
 
+(defun SC3D:CAMERA-INSERT-P (e / ed)
+  (if e
+    (progn
+      (setq ed (entget e))
+      (and
+        (= (cdr (assoc 0 ed)) "INSERT")
+        (SC3D:GET-XDATA e)
+      )
+    )
+    nil
+  )
+)
+
+(defun SC3D:SELECT-CAMERA-BLOCK (msg / sel e)
+  (setq sel (entsel msg))
+  (if sel
+    (progn
+      (setq e (car sel))
+      (if (SC3D:CAMERA-INSERT-P e)
+        e
+        (progn
+          (princ "\nCe bloc n'est pas une camera generee par S_CAMERA.")
+          nil
+        )
+      )
+    )
+    nil
+  )
+)
+
+(defun SC3D:XCLIP-CMD (args / oldcmd r)
+  (setq oldcmd (getvar "CMDECHO"))
+  (setvar "CMDECHO" 0)
+  (setq r (vl-catch-all-apply 'vl-cmdf args))
+  (setvar "CMDECHO" oldcmd)
+
+  (if (vl-catch-all-error-p r)
+    (progn
+      (princ
+        (strcat
+          "\nErreur XCLIP : "
+          (vl-catch-all-error-message r)
+        )
+      )
+      nil
+    )
+    T
+  )
+)
+
+(defun SC3D:XCLIP-DELETE (e)
+  (SC3D:XCLIP-CMD (list "_.XCLIP" e "" "_Delete"))
+)
+
+(defun SC3D:XCLIP-ON (e)
+  (SC3D:XCLIP-CMD (list "_.XCLIP" e "" "_ON"))
+)
+
+(defun SC3D:XCLIP-OFF (e)
+  (SC3D:XCLIP-CMD (list "_.XCLIP" e "" "_OFF"))
+)
+
+(defun SC3D:SAFE-SETVAR (var val / r)
+  (setq r (vl-catch-all-apply 'setvar (list var val)))
+  (not (vl-catch-all-error-p r))
+)
+
+(defun SC3D:XCLIPFRAME-SHOW ()
+  (if (not (SC3D:SAFE-SETVAR "XCLIPFRAME" 2))
+    (SC3D:SAFE-SETVAR "XCLIPFRAME" 1)
+  )
+)
+
+(defun SC3D:XCLIPFRAME-HIDE ()
+  ;; Masquer = on ne voit plus l'ajustement et le champ complet revient.
+  (SC3D:SAFE-SETVAR "XCLIPFRAME" 0)
+)
+
+(defun SC3D:XCLIP-RECTANGLE (e / p1 p2 ok)
+  (setq p1 (getpoint "\nPremier coin du rectangle d'ajustement : "))
+  (if p1
+    (progn
+      (setq p2 (getcorner p1 "\nCoin oppose : "))
+      (if p2
+        (progn
+          (SC3D:XCLIP-DELETE e)
+          (SC3D:XCLIPFRAME-SHOW)
+          (setq ok
+            (SC3D:XCLIP-CMD
+              (list
+                "_.XCLIP"
+                e
+                ""
+                "_New"
+                "_Rectangular"
+                p1
+                p2
+              )
+            )
+          )
+          (if ok
+            (progn
+              (SC3D:XCLIP-ON e)
+              (command "_.REGEN")
+              (princ "\nAjustement rectangle applique.")
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+(defun SC3D:TEMP-DELETE (ents)
+  (foreach e ents
+    (if (and e (entget e))
+      (entdel e)
+    )
+  )
+)
+
+(defun SC3D:TEMP-LINE (p1 p2 / e)
+  ;; Ligne temporaire visible pendant le trace du polygone.
+  ;; Elle est supprimee automatiquement apres validation ou annulation.
+  (setq e
+    (entmakex
+      (list
+        '(0 . "LINE")
+        (cons 8 "SC3D_AJUSTEMENT")
+        (cons 62 2)
+        (cons 10 p1)
+        (cons 11 p2)
+      )
+    )
+  )
+  (if e
+    (progn
+      (entupd e)
+      (redraw e 3)
+    )
+  )
+  e
+)
+
+(defun SC3D:GET-POLY-POINTS (/ pts p prev tempEnts closeEnt olderr result)
+  (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
+  (SC3D:XCLIPFRAME-SHOW)
+
+  (setq pts '())
+  (setq tempEnts '())
+  (setq closeEnt nil)
+  (setq result nil)
+  (setq olderr *error*)
+
+  (defun *error* (msg)
+    (if closeEnt
+      (SC3D:TEMP-DELETE (list closeEnt))
+    )
+    (SC3D:TEMP-DELETE tempEnts)
+    (setq *error* olderr)
+    (if (and msg (/= msg "Function cancelled") (/= msg "quit / exit abort"))
+      (princ (strcat "\nErreur : " msg))
+    )
+    (princ)
+  )
+
+  (setq p (getpoint "\nPremier point du polygone d'ajustement : "))
+
+  (while p
+    (setq pts (append pts (list p)))
+
+    ;; Affiche les segments deja valides, sinon le polygone est invisible pendant le trace.
+    (if prev
+      (setq tempEnts (append tempEnts (list (SC3D:TEMP-LINE prev p))))
+    )
+
+    ;; Affiche aussi la fermeture provisoire du polygone.
+    (if closeEnt
+      (progn
+        (SC3D:TEMP-DELETE (list closeEnt))
+        (setq closeEnt nil)
+      )
+    )
+    (if (>= (length pts) 3)
+      (setq closeEnt (SC3D:TEMP-LINE p (car pts)))
+    )
+
+    (setq prev p)
+
+    (if (< (length pts) 3)
+      (setq p (getpoint p "\nPoint suivant : "))
+      (setq p (getpoint p "\nPoint suivant ou Entree pour terminer : "))
+    )
+  )
+
+  (if (>= (length pts) 3)
+    (setq result pts)
+    (progn
+      (princ "\nIl faut au moins 3 points pour un polygone.")
+      (setq result nil)
+    )
+  )
+
+  ;; Les lignes jaunes ne servent que d'aide au trace.
+  ;; L'ajustement final est ensuite applique par XCLIP.
+  (if closeEnt
+    (SC3D:TEMP-DELETE (list closeEnt))
+  )
+  (SC3D:TEMP-DELETE tempEnts)
+  (setq *error* olderr)
+
+  result
+)
+
+(defun SC3D:XCLIP-POLYGONE (e / pts ok)
+  (setq pts (SC3D:GET-POLY-POINTS))
+
+  (if pts
+    (progn
+      (SC3D:XCLIP-DELETE e)
+      (SC3D:XCLIPFRAME-SHOW)
+      (setq ok
+        (SC3D:XCLIP-CMD
+          (append
+            (list
+              "_.XCLIP"
+              e
+              ""
+              "_New"
+              "_Polygonal"
+            )
+            pts
+            (list "")
+          )
+        )
+      )
+
+      (if ok
+        (progn
+          (SC3D:XCLIP-ON e)
+          (command "_.REGEN")
+          (princ "\nAjustement polygone applique.")
+        )
+      )
+    )
+  )
+)
+
+(defun SC3D:CMD-AJUSTER (/ e choix)
+  (setq e (SC3D:SELECT-CAMERA-BLOCK "\nSelectionner le bloc camera a ajuster : "))
+
+  (if e
+    (progn
+      (initget "Rectangle Polygone Afficher Masquer Supprimer")
+      (setq choix
+        (getkword
+          "\nAjuster [Rectangle/Polygone/Afficher/Masquer/Supprimer] <Rectangle> : "
+        )
+      )
+
+      (if (null choix)
+        (setq choix "Rectangle")
+      )
+
+      (cond
+        ((= choix "Rectangle")
+          (SC3D:XCLIP-RECTANGLE e)
+        )
+        ((= choix "Polygone")
+          (SC3D:XCLIP-POLYGONE e)
+        )
+        ((= choix "Afficher")
+          (SC3D:XCLIPFRAME-SHOW)
+          (if (SC3D:XCLIP-ON e)
+            (progn
+              (command "_.REGEN")
+              (princ "\nAjustement affiche : le champ de vision est decoupe.")
+            )
+          )
+        )
+        ((= choix "Masquer")
+          (if (SC3D:XCLIP-OFF e)
+            (progn
+              (SC3D:XCLIPFRAME-HIDE)
+              (command "_.REGEN")
+              (princ "\nAjustement masque : le champ de vision complet est visible.")
+            )
+          )
+        )
+        ((= choix "Supprimer")
+          (if (SC3D:XCLIP-DELETE e)
+            (progn
+              (SC3D:XCLIPFRAME-HIDE)
+              (command "_.REGEN")
+              (princ "\nAjustement supprime.")
+            )
+          )
+        )
+      )
+    )
+  )
+
+  (princ)
+)
+
+(defun c:S_CAMERA_AJUSTER ()
+  (SC3D:CMD-AJUSTER)
+  (princ)
+)
+
 
 (defun SC3D:MENU-CAMERA (/ choix)
-  (initget "C M A S")
+  (initget "C M J A S")
   (setq choix
     (getkword
-      "\nCamera - action [Creer/Modifier/Ajouter/Supprimer] <C> : "
+      "\nCamera - action [Creer/Modifier/aJuster/Ajouter/Supprimer] <C> : "
     )
   )
   (if (null choix)
@@ -3335,6 +3645,9 @@
     )
     ((= choix "S")
       (SC3D:CMD-SUPPRIMER)
+    )
+    ((= choix "J")
+      (SC3D:CMD-AJUSTER)
     )
   )
 
