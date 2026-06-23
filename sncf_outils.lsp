@@ -1685,6 +1685,15 @@
 )
 
 (setq *SC3D_STD_LIST* '("2014" "2025"))
+(setq *SC3D_VIEW_LIST* '("Vue du dessus" "Vue de cote"))
+
+(defun SC3D:VIEW-LABEL->CODE (v)
+  (if (= v "Vue de cote") "SIDE" "TOP")
+)
+
+(defun SC3D:VIEW-CODE->LABEL (v)
+  (if (= v "SIDE") "Vue de cote" "Vue du dessus")
+)
 
 (defun SC3D:DTR (a) (* *SC3D_PI* (/ a 180.0)))
 (defun SC3D:RTD (a) (* 180.0 (/ a *SC3D_PI*)))
@@ -1963,7 +1972,7 @@
   (if b "1" "0")
 )
 
-(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans)
+(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view)
   (setq manu  (cdr (assoc 'manu vals)))
   (setq model (cdr (assoc 'model vals)))
   (setq fmt   (cdr (assoc 'fmt vals)))
@@ -1976,6 +1985,9 @@
   (setq std   (cdr (assoc 'std vals)))
   (setq grid  (cdr (assoc 'grid vals)))
   (setq trans (cdr (assoc 'trans vals)))
+  (setq view  (cdr (assoc 'view vals)))
+
+  (if (null view) (setq view "TOP"))
 
   (strcat
     manu "|"
@@ -1991,7 +2003,8 @@
     std "|"
     (SC3D:BOOLSTR grid) "|"
     (rtos trans 2 6) "|"
-    textHandle
+    textHandle "|"
+    view
   )
 )
 
@@ -2013,6 +2026,7 @@
       (cons 'grid (= (nth 11 p) "1"))
       (cons 'trans (SC3D:ATOF (nth 12 p) 60.0))
       (cons 'texth (if (> (length p) 13) (nth 13 p) ""))
+      (cons 'view (if (> (length p) 14) (nth 14 p) "TOP"))
     )
     nil
   )
@@ -2090,6 +2104,7 @@
 
   (write-line "    : boxed_column {" f)
   (write-line "      label = \"4. Affichage\";" f)
+  (write-line "      : popup_list { key = \"view\"; label = \"Vue\"; width = 22; }" f)
   (write-line "      : toggle { key = \"grid\"; label = \"Afficher la grille\"; }" f)
   (write-line "      : edit_box { key = \"trans\"; label = \"Transparence (0-90%)\"; edit_width = 10; }" f)
   (write-line "    }" f)
@@ -2184,6 +2199,7 @@
     (cons 'camh (SC3D:ATOF (get_tile "camh") 4.0))
     (cons 'objh (SC3D:ATOF (get_tile "objh") 2.5))
     (cons 'std (nth (atoi (get_tile "std")) *SC3D_STD_LIST*))
+    (cons 'view (SC3D:VIEW-LABEL->CODE (nth (atoi (get_tile "view")) *SC3D_VIEW_LIST*)))
     (cons 'grid (= (get_tile "grid") "1"))
     (cons 'trans (SC3D:ATOF (get_tile "trans") 60.0))
   )
@@ -2253,6 +2269,10 @@
       (mapcar 'add_list *SC3D_STD_LIST*)
       (end_list)
 
+      (start_list "view")
+      (mapcar 'add_list *SC3D_VIEW_LIST*)
+      (end_list)
+
       (if def
         (progn
           (setq manu (cdr (assoc 'manu def)))
@@ -2271,6 +2291,7 @@
           (set_tile "fmt" (itoa (SC3D:INDEXOF fmt *SC3D_SENSOR_LIST*)))
           (set_tile "res" (itoa (SC3D:INDEXOF res *SC3D_RES_LIST*)))
           (set_tile "std" (itoa (SC3D:INDEXOF std *SC3D_STD_LIST*)))
+          (set_tile "view" (itoa (SC3D:INDEXOF (SC3D:VIEW-CODE->LABEL (cdr (assoc 'view def))) *SC3D_VIEW_LIST*)))
 
           (set_tile "focal" (rtos (cdr (assoc 'focal def)) 2 2))
           (set_tile "dist" (rtos (cdr (assoc 'dist def)) 2 2))
@@ -2286,6 +2307,7 @@
           (set_tile "fmt" (itoa (SC3D:INDEXOF "1/2.8" *SC3D_SENSOR_LIST*)))
           (set_tile "res" (itoa (SC3D:INDEXOF "1920x1080 (2MP 16:9)" *SC3D_RES_LIST*)))
           (set_tile "std" "0")
+          (set_tile "view" "0")
           (set_tile "focal" "5")
           (set_tile "dist" "15")
           (set_tile "camh" "4")
@@ -2591,7 +2613,6 @@
 (defun SC3D:CAMERA-SYMBOL (camH / s lay)
   (setq s 0.35)
   (setq lay (SC3D:ACTIVE-CAMERA-LAYER))
-  (SC3D:LINE (SC3D:P 0.0 0.0 0.0) (SC3D:P 0.0 0.0 camH) lay 7)
   (SC3D:LINE (SC3D:P (- s) (- s) camH) (SC3D:P s (- s) camH) lay 2)
   (SC3D:LINE (SC3D:P s (- s) camH) (SC3D:P s s camH) lay 2)
   (SC3D:LINE (SC3D:P s s camH) (SC3D:P (- s) s camH) lay 2)
@@ -2626,7 +2647,93 @@
   )
 )
 
-(defun SC3D:PPM-DIST (ppm resW tanH tilt camH objH / targetWidth halfWidth dz d)
+(defun SC3D:CORNER-X-PLANE (x tanH tanV tilt signV / den)
+  ;; Coordonne X d'un coin du CDV sur le plan vertical situe a la distance x.
+  ;; signV =  1 : coin haut
+  ;; signV = -1 : coin bas
+  (setq den (+ (cos tilt) (* signV tanV (sin tilt))))
+  (if (equal den 0.0 0.000000001)
+    0.0
+    (/ (* x tanH) den)
+  )
+)
+
+(defun SC3D:CORNER-Z-PLANE (x tanV tilt camH signV / den num)
+  ;; Coordonne Z d'un coin du CDV sur le plan vertical situe a la distance x.
+  (setq den (+ (cos tilt) (* signV tanV (sin tilt))))
+  (setq num (- (* signV tanV (cos tilt)) (sin tilt)))
+  (if (equal den 0.0 0.000000001)
+    camH
+    (+ camH (/ (* x num) den))
+  )
+)
+
+(defun SC3D:FULL-WIDTH-JVSG-PPM (x tanH tanV tilt camH objH / xt zt xb zb k xg w1 w2)
+  ;; JVSG n'utilise pas exactement la largeur CDV affichee pour le PPM.
+  ;; Pour le PPM, si le bas du champ passe sous le sol, il prend la largeur
+  ;; au croisement sol des deux aretes verticales gauche/droite du volume.
+  (if (<= x 0.0)
+    0.0
+    (progn
+      (setq xt (SC3D:CORNER-X-PLANE x tanH tanV tilt 1.0))
+      (setq zt (SC3D:CORNER-Z-PLANE x tanV tilt camH 1.0))
+      (setq xb (SC3D:CORNER-X-PLANE x tanH tanV tilt -1.0))
+      (setq zb (SC3D:CORNER-Z-PLANE x tanV tilt camH -1.0))
+
+      (if (and (not (equal zb zt 0.000000001))
+               (or (and (> zt 0.0) (< zb 0.0))
+                   (and (< zt 0.0) (> zb 0.0))))
+        (progn
+          (setq k (/ (- 0.0 zt) (- zb zt)))
+          (setq xg (+ xt (* k (- xb xt))))
+          (* 2.0 (abs xg))
+        )
+        (progn
+          (setq w1 (abs xt))
+          (setq w2 (abs xb))
+          (* 2.0 (SC3D:MIN w1 w2))
+        )
+      )
+    )
+  )
+)
+
+(defun SC3D:PPM-DIST (ppm resW tanH tanV tilt camH objH maxD / targetWidth lo hi mid w i)
+  ;; Distance ou le PPM atteint le seuil demande.
+  ;; Recherche numerique car JVSG change de largeur de reference pour le PPM
+  ;; quand le champ traverse le sol.
+  (setq targetWidth (/ resW ppm))
+
+  (if (<= targetWidth 0.0)
+    0.0
+    (progn
+      (if (<= (SC3D:FULL-WIDTH-JVSG-PPM maxD tanH tanV tilt camH objH) targetWidth)
+        (+ maxD 1.0)
+        (progn
+          (setq lo 0.0)
+          (setq hi maxD)
+          (setq i 0)
+
+          (while (< i 45)
+            (setq mid (/ (+ lo hi) 2.0))
+            (setq w (SC3D:FULL-WIDTH-JVSG-PPM mid tanH tanV tilt camH objH))
+            (if (< w targetWidth)
+              (setq lo mid)
+              (setq hi mid)
+            )
+            (setq i (+ i 1))
+          )
+
+          hi
+        )
+      )
+    )
+  )
+)
+
+(defun SC3D:PPM-DIST-TOP-OLD (ppm resW tanH tilt camH objH / targetWidth halfWidth dz d)
+  ;; Ancien calcul conserve pour la vue du dessus.
+  ;; Il remet les limites des blocs PPM comme avant, sans toucher au calcul PPM par distance.
   (setq targetWidth (/ resW ppm))
   (setq halfWidth (/ targetWidth 2.0))
   (setq dz (- camH objH))
@@ -2656,7 +2763,7 @@
   )
 )
 
-(defun SC3D:DRAW-PPM (resW maxD nearD tanH tilt camH objH standard trans / lst prev done z ppm lay aci rgb d x1 x2)
+(defun SC3D:DRAW-PPM (resW maxD nearD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay aci rgb d x1 x2)
   (setq lst (SC3D:PPM-LIST standard))
   (setq prev 0.0)
   (setq done nil)
@@ -2668,7 +2775,7 @@
         (setq lay (nth 1 z))
         (setq aci (nth 2 z))
         (setq rgb (nth 3 z))
-        (setq d (SC3D:PPM-DIST ppm resW tanH tilt camH objH))
+        (setq d (SC3D:PPM-DIST-TOP-OLD ppm resW tanH tilt camH objH))
         (setq x1 (SC3D:MAX prev nearD))
         (setq x2 (SC3D:MIN d maxD))
 
@@ -2832,7 +2939,7 @@
     )
   )
 
-  (SC3D:DRAW-PPM resW maxD nearD tanH tilt camH objH standard trans)
+  (SC3D:DRAW-PPM resW maxD nearD tanH tanV tilt camH objH standard trans)
 
   (if showGrid
     (SC3D:GRID maxD tanH tilt camH objH)
@@ -2842,6 +2949,238 @@
   (SC3D:DRAW-FRUSTUM maxD camH objH tilt tanH tanV)
   (SC3D:DRAW-DIST-LABELS maxD)
   (SC3D:VERT-RECT maxD maxD tanH tilt camH objH objH "SC3D_RAYONS" 4)
+
+  (entmake '((0 . "ENDBLK")))
+)
+
+;; ------------------------------------------------------------------------------------
+;; VUE DE COTE
+;; x = distance depuis la camera, y = hauteur, z = 0.
+;; Cette vue reprend les memes calculs que la vue du dessus, mais elle affiche le profil
+;; vertical : hauteur camera, rayon haut, rayon bas, zone non visible et zones PPM.
+;; ------------------------------------------------------------------------------------
+
+(defun SC3D:SIDE-RAY-Y (x camH angle)
+  (- camH (* x (SC3D:TAN angle)))
+)
+
+(defun SC3D:SIDE-TOP-Y (x camH tilt vHalf)
+  (SC3D:SIDE-RAY-Y x camH (- tilt vHalf))
+)
+
+(defun SC3D:SIDE-CENTER-Y (x camH tilt)
+  (SC3D:SIDE-RAY-Y x camH tilt)
+)
+
+(defun SC3D:SIDE-BOT-Y (x camH tilt vHalf)
+  (SC3D:SIDE-RAY-Y x camH (+ tilt vHalf))
+)
+
+(defun SC3D:SIDE-P (x y)
+  (SC3D:P x y 0.0)
+)
+
+(defun SC3D:SIDE-BAND (x1 x2 h lay aci rgb trans / p1 p2 p3 p4)
+  (if (< x1 0.0) (setq x1 0.0))
+  (if (< x2 0.0) (setq x2 0.0))
+  (if (< h 0.0) (setq h 0.0))
+
+  (if (> x2 x1)
+    (progn
+      (setq p1 (SC3D:SIDE-P x1 0.0))
+      (setq p2 (SC3D:SIDE-P x2 0.0))
+      (setq p3 (SC3D:SIDE-P x2 h))
+      (setq p4 (SC3D:SIDE-P x1 h))
+
+      (SC3D:ZONE-SOLID p1 p2 p3 p4 lay aci rgb trans)
+      (SC3D:LINE p1 p2 lay aci)
+      (SC3D:LINE p2 p3 lay aci)
+      (SC3D:LINE p3 p4 lay aci)
+      (SC3D:LINE p4 p1 lay aci)
+    )
+  )
+)
+
+(defun SC3D:SIDE-DRAW-PPM (resW maxD nearD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay aci rgb d x1 x2)
+  (setq lst (SC3D:PPM-LIST standard))
+  (setq prev 0.0)
+  (setq done nil)
+
+  (foreach z lst
+    (if (not done)
+      (progn
+        (setq ppm (nth 0 z))
+        (setq lay (nth 1 z))
+        (setq aci (nth 2 z))
+        (setq rgb (nth 3 z))
+        (setq d (SC3D:PPM-DIST ppm resW tanH tanV tilt camH objH maxD))
+        (setq x1 (SC3D:MAX prev nearD))
+        (setq x2 (SC3D:MIN d maxD))
+
+        (if (> x2 x1)
+          (SC3D:SIDE-BAND x1 x2 objH lay aci rgb trans)
+        )
+
+        (if (>= d maxD)
+          (setq done T)
+          (setq prev d)
+        )
+      )
+    )
+  )
+)
+
+(defun SC3D:SIDE-GRID (maxD camH objH tilt vHalf / yMax yTop i)
+  (setq yMax (SC3D:SIDE-YMAX maxD camH objH tilt vHalf))
+
+  (setq i 0.0)
+  (while (<= i maxD)
+    (SC3D:LINE (SC3D:SIDE-P i 0.0) (SC3D:SIDE-P i yMax) "SC3D_GRILLE" 8)
+    (setq i (+ i 1.0))
+  )
+
+  (setq i 0.0)
+  (while (<= i yMax)
+    (SC3D:LINE (SC3D:SIDE-P 0.0 i) (SC3D:SIDE-P maxD i) "SC3D_GRILLE" 8)
+    (setq i (+ i 1.0))
+  )
+)
+
+(defun SC3D:SIDE-CAM-PT (camH tilt dx dy / ca sa x y)
+  ;; dx = avance dans le sens de la camera, dy = hauteur locale du symbole.
+  ;; En vue de cote, un tilt positif pointe vers le bas.
+  (setq ca (cos tilt))
+  (setq sa (sin tilt))
+  (setq x (+ (* dx ca) (* dy sa)))
+  (setq y (+ camH (- (* dy ca) (* dx sa))))
+  (SC3D:SIDE-P x y)
+)
+
+(defun SC3D:SIDE-CAMERA-SYMBOL (camH tilt / l h lay p1 p2 p3 p4)
+  (setq l 0.55)
+  (setq h 0.34)
+  (setq lay (SC3D:ACTIVE-CAMERA-LAYER))
+
+  ;; Symbole camera incline selon l'axe optique reel de la vue de cote.
+  (setq p1 (SC3D:SIDE-CAM-PT camH tilt (- (/ l 2.0)) (- (/ h 2.0))))
+  (setq p2 (SC3D:SIDE-CAM-PT camH tilt (/ l 2.0) (- (/ h 2.0))))
+  (setq p3 (SC3D:SIDE-CAM-PT camH tilt (/ l 2.0) (/ h 2.0)))
+  (setq p4 (SC3D:SIDE-CAM-PT camH tilt (- (/ l 2.0)) (/ h 2.0)))
+
+  (SC3D:LINE p1 p2 lay 2)
+  (SC3D:LINE p2 p3 lay 2)
+  (SC3D:LINE p3 p4 lay 2)
+  (SC3D:LINE p4 p1 lay 2)
+)
+
+(defun SC3D:SIDE-YMAX (maxD camH objH tilt vHalf / yTop yMax)
+  (setq yTop (SC3D:SIDE-TOP-Y maxD camH tilt vHalf))
+  (setq yMax (+ 1.0 (SC3D:MAX camH (SC3D:MAX objH yTop))))
+  (if (< yMax 5.0) (setq yMax 5.0))
+  yMax
+)
+
+(defun SC3D:SIDE-DRAW-AXES (maxD camH objH tilt vHalf / y)
+  ;; Axe distance au sol
+  (SC3D:LINE (SC3D:SIDE-P 0.0 0.0) (SC3D:SIDE-P maxD 0.0) "SC3D_AXE" 7)
+
+  ;; Axe hauteur : ne depasse pas la hauteur de la camera
+  (SC3D:LINE (SC3D:SIDE-P 0.0 0.0) (SC3D:SIDE-P 0.0 camH) "SC3D_AXE" 7)
+
+  ;; Reperes de hauteur : pas de texte 0 sur l'axe hauteur
+  (setq y 0.0)
+  (while (<= y camH)
+    (SC3D:LINE (SC3D:SIDE-P -0.12 y) (SC3D:SIDE-P 0.12 y) "SC3D_AXE" 7)
+    (if (and (> y 0.0) (= (rem (fix y) 5) 0))
+      (SC3D:TEXT-LOCAL (SC3D:SIDE-P -0.55 y) 0.25 (rtos y 2 0) "SC3D_TEXTES" 7 0.0)
+    )
+    (setq y (+ y 1.0))
+  )
+)
+
+(defun SC3D:SIDE-DIST-LABELS (maxD camH objH / d yMax)
+  (setq yMax (+ camH 0.70))
+  (setq d 0.0)
+  (while (<= d maxD)
+    (SC3D:LINE (SC3D:SIDE-P d -0.12) (SC3D:SIDE-P d 0.12) "SC3D_AXE" 7)
+    (if (or (= d 0.0) (= (rem (fix d) 5) 0))
+      (SC3D:TEXT-LOCAL (SC3D:SIDE-P d -0.45) 0.25 (rtos d 2 0) "SC3D_TEXTES" 2 0.0)
+    )
+    (setq d (+ d 1.0))
+  )
+
+  (SC3D:TEXT-LOCAL (SC3D:SIDE-P -0.75 camH) 0.25 (strcat (rtos camH 2 2) "m") "SC3D_TEXTES" 7 0.0)
+  (SC3D:TEXT-LOCAL (SC3D:SIDE-P (+ maxD 0.55) objH) 0.25 (strcat (rtos objH 2 2) "m") "SC3D_TEXTES" 7 0.0)
+)
+
+(defun SC3D:SIDE-DRAW-FRUSTUM (maxD camH objH tilt vHalf nearD / topY centerY botX botY angleDeg)
+  (setq topY    (SC3D:SIDE-TOP-Y maxD camH tilt vHalf))
+  (setq centerY (SC3D:SIDE-CENTER-Y maxD camH tilt))
+  (setq botX    (SC3D:MIN nearD maxD))
+  (setq botY    (SC3D:SIDE-BOT-Y botX camH tilt vHalf))
+  (if (< botY 0.0) (setq botY 0.0))
+
+  ;; Le sol est dessine par l'axe distance (SC3D_AXE).
+
+  ;; Rayon haut du champ de vision.
+  (SC3D:LINE (SC3D:SIDE-P 0.0 camH) (SC3D:SIDE-P maxD topY) "SC3D_RAYONS" 4)
+
+  ;; Rayon bas du champ de vision.
+  (SC3D:LINE (SC3D:SIDE-P 0.0 camH) (SC3D:SIDE-P botX botY) "SC3D_RAYONS" 4)
+
+  ;; Cible a la distance max
+  (SC3D:LINE (SC3D:SIDE-P maxD 0.0) (SC3D:SIDE-P maxD objH) "SC3D_RAYONS" 1)
+
+  ;; Petit repere orange en haut de cible
+  (SC3D:LINE (SC3D:SIDE-P (- maxD 0.12) objH) (SC3D:SIDE-P (+ maxD 0.12) objH) "SC3D_TEXTES" 30)
+  (SC3D:LINE (SC3D:SIDE-P maxD (- objH 0.12)) (SC3D:SIDE-P maxD (+ objH 0.12)) "SC3D_TEXTES" 30)
+
+  (setq angleDeg (SC3D:RTD tilt))
+  (SC3D:TEXT-LOCAL (SC3D:SIDE-P 0.65 (+ camH 0.45)) 0.25 (strcat (rtos angleDeg 2 1) "°") "SC3D_TEXTES" 2 0.0)
+)
+
+(defun SC3D:CREATE-BLOCK-GEOM-SIDE (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD vHalf)
+  (setq maxD     (cdr (assoc 'dist vals)))
+  (setq camH     (cdr (assoc 'camh vals)))
+  (setq objH     (cdr (assoc 'objh vals)))
+  (setq standard (cdr (assoc 'std vals)))
+  (setq showGrid (cdr (assoc 'grid vals)))
+  (setq trans    (cdr (assoc 'trans vals)))
+  (setq resW     (cdr (assoc 'resW calc)))
+  (setq tanH     (cdr (assoc 'tanH calc)))
+  (setq tanV     (cdr (assoc 'tanV calc)))
+  (setq tilt     (cdr (assoc 'tilt calc)))
+  (setq nearD    (cdr (assoc 'nearD calc)))
+  (setq vHalf    (/ (SC3D:DTR (cdr (assoc 'vAng calc))) 2.0))
+
+  (if (< trans 0.0) (setq trans 0.0))
+  (if (> trans 90.0) (setq trans 90.0))
+
+  (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
+
+  (if (> nearD 0.0)
+    (SC3D:SIDE-BAND
+      0.0
+      (SC3D:MIN nearD maxD)
+      objH
+      "SC3D_NON_VISIBLE"
+      1
+      (SC3D:RGB 120 0 0)
+      trans
+    )
+  )
+
+  (SC3D:SIDE-DRAW-PPM resW maxD nearD tanH tanV tilt camH objH standard trans)
+
+  (if showGrid
+    (SC3D:SIDE-GRID maxD camH objH tilt vHalf)
+  )
+
+  (SC3D:SIDE-DRAW-AXES maxD camH objH tilt vHalf)
+
+  (SC3D:SIDE-CAMERA-SYMBOL camH tilt)
+  (SC3D:SIDE-DRAW-FRUSTUM maxD camH objH tilt vHalf nearD)
+  (SC3D:SIDE-DIST-LABELS maxD camH objH)
 
   (entmake '((0 . "ENDBLK")))
 )
@@ -2876,7 +3215,29 @@
   )
 )
 
+(defun SC3D:SUMMARY-TEXT-SIDE (vals / manu model base)
+  ;; Texte de la vue de cote : nom de la camera - infos camera, sur une seule ligne.
+  (setq manu (cdr (assoc 'manu vals)))
+  (setq model (cdr (assoc 'model vals)))
+
+  (setq base
+    (strcat
+      (cdr (assoc 'fmt vals))
+      " / "
+      (rtos (cdr (assoc 'focal vals)) 2 1)
+      "mm / "
+      (SC3D:RES-BASIC (cdr (assoc 'res vals)))
+    )
+  )
+
+  (if (and manu model (/= manu "Manuel") (/= model "Manuel"))
+    (strcat manu " " model " - " base)
+    base
+  )
+)
+
 (defun SC3D:CREATE-CAMERA (base vals / calc blockName ins txt txtH cfg rot txtPt camLayer)
+  (setq vals (SC3D:SETVAL vals 'view "TOP"))
   (SC3D:SETUP-LAYERS)
   (setq camLayer (SC3D:CAMERA-LAYER-NAME vals))
   (SC3D:LAYER camLayer 2)
@@ -2919,7 +3280,7 @@
       (SC3D:SUMMARY-TEXT vals)
       "SC3D_TEXTES"
       7
-      *SC3D_ROT*
+      0.0
     )
   )
 
@@ -2935,6 +3296,186 @@
   (princ (strcat "\nLargeur CDV : " (rtos (cdr (assoc 'targetWidthMax calc)) 2 2) " m"))
 
   ins
+)
+
+(defun SC3D:CREATE-CAMERA-SIDE (base vals / calc blockName ins txt txtH cfg rot txtPt camLayer)
+  (setq vals (SC3D:SETVAL vals 'view "SIDE"))
+  (SC3D:SETUP-LAYERS)
+  (setq camLayer (SC3D:CAMERA-LAYER-NAME vals))
+  (SC3D:LAYER camLayer 2)
+  (setq *SC3D_ACTIVE_CAMERA_LAYER* camLayer)
+
+  (setq rot (cdr (assoc 'rot vals)))
+  (setq *SC3D_BASE* (list (car base) (cadr base) (if (caddr base) (caddr base) 0.0)))
+  (setq *SC3D_ROT* (SC3D:DTR rot))
+  (setq *SC3D_CA* (cos *SC3D_ROT*))
+  (setq *SC3D_SA* (sin *SC3D_ROT*))
+
+  (setq calc (SC3D:CALC vals))
+
+  (setq blockName (strcat "SC3D_CAMERA_COTE_" (rtos (getvar "CDATE") 2 8)))
+  (setq blockName (SC3D:REPL blockName "." "_"))
+
+  (SC3D:CREATE-BLOCK-GEOM-SIDE blockName vals calc)
+
+  (setq ins
+    (entmakex
+      (list
+        '(0 . "INSERT")
+        (cons 8 camLayer)
+        (cons 2 blockName)
+        (cons 10 *SC3D_BASE*)
+        '(41 . 1.0)
+        '(42 . 1.0)
+        '(43 . 1.0)
+        (cons 50 *SC3D_ROT*)
+      )
+    )
+  )
+
+  (setq txtPt (SC3D:PW 0.45 (+ (cdr (assoc 'camh vals)) 0.85) 0.0))
+
+  (setq txt
+    (SC3D:TEXT-WORLD
+      txtPt
+      0.30
+      (SC3D:SUMMARY-TEXT-SIDE vals)
+      "SC3D_TEXTES"
+      7
+      0.0
+    )
+  )
+
+  (setq txtH (cdr (assoc 5 (entget txt))))
+  (setq cfg (SC3D:CFG-STR vals txtH))
+
+  (SC3D:SET-XDATA ins cfg)
+  (SC3D:SET-XDATA txt cfg)
+
+  (command "_.REGEN")
+
+  (princ (strcat "\nVue de cote creee."))
+  (princ (strcat "\nAngle vertical : " (rtos (cdr (assoc 'vAng calc)) 2 2) " deg"))
+  (princ (strcat "\nZone non visible : 0 a " (rtos (cdr (assoc 'nearD calc)) 2 2) " m"))
+
+  ins
+)
+
+(defun SC3D:CREATE-CAMERA-AUTO (base vals / view)
+  (setq view (cdr (assoc 'view vals)))
+  (if (= view "SIDE")
+    (SC3D:CREATE-CAMERA-SIDE base vals)
+    (SC3D:CREATE-CAMERA base vals)
+  )
+)
+
+
+(defun SC3D:PPM-AT-DIST (dist vals calc / resW tanH tanV tilt camH objH targetWidth ppm)
+  (setq resW (cdr (assoc 'resW calc)))
+  (setq tanH (cdr (assoc 'tanH calc)))
+  (setq tanV (cdr (assoc 'tanV calc)))
+  (setq tilt (cdr (assoc 'tilt calc)))
+  (setq camH (cdr (assoc 'camh vals)))
+  (setq objH (cdr (assoc 'objh vals)))
+
+  ;; Meme largeur de reference que JVSG pour la densite de pixels.
+  ;; Exemple 1/3, 4mm, 1920x1080, D=15m, H=4m, cible=2m : ~105 PPM.
+  (setq targetWidth (SC3D:FULL-WIDTH-JVSG-PPM dist tanH tanV tilt camH objH))
+
+  (if (and targetWidth (> targetWidth 0.000001))
+    (/ resW targetWidth)
+    nil
+  )
+)
+
+(defun SC3D:PPM-ZONE (ppm standard / lst found z seuil)
+  (setq lst (SC3D:PPM-LIST standard))
+  (setq found nil)
+
+  (foreach z lst
+    (setq seuil (nth 0 z))
+    (if (and (null found) (>= ppm seuil))
+      (setq found seuil)
+    )
+  )
+
+  found
+)
+
+(defun SC3D:PPM-ZONE-TEXT (zone ppm standard / lastZ)
+  (if zone
+    (strcat "Zone PPM : " (rtos zone 2 0))
+    (progn
+      (setq lastZ (last (SC3D:PPM-LIST standard)))
+      (if lastZ
+        (strcat "Zone PPM : inferieur a " (rtos (nth 0 (car lastZ)) 2 0))
+        "Zone PPM : inconnue"
+      )
+    )
+  )
+)
+
+(defun SC3D:CMD-CALCULER (/ sel e cfg vals dStr d calc ppm nearD maxD zone standard msg)
+  (setq sel (entsel "\nSelectionner la camera : "))
+
+  (if sel
+    (progn
+      (setq e (car sel))
+      (setq cfg (SC3D:GET-XDATA e))
+
+      (if cfg
+        (progn
+          (setq vals (SC3D:CFG-VALS cfg))
+
+          (if vals
+            (progn
+              (setq dStr (getstring T "\nDistance a calculer : "))
+              (setq d (SC3D:ATOF dStr -1.0))
+
+              (if (<= d 0.0)
+                (princ "\nDistance incorrecte.")
+                (progn
+                  (setq calc (SC3D:CALC vals))
+                  (setq nearD (cdr (assoc 'nearD calc)))
+                  (setq maxD (cdr (assoc 'dist vals)))
+                  (setq standard (cdr (assoc 'std vals)))
+
+                  (if (< d nearD)
+                    (progn
+                      (princ (strcat "\nDistance : " (rtos d 2 2)))
+                      (princ (strcat "\nPPM associe : non visible"))
+                      (princ (strcat "\nZone non visible : 0 a " (rtos nearD 2 2)))
+                    )
+                    (progn
+                      (setq ppm (SC3D:PPM-AT-DIST d vals calc))
+
+                      (if ppm
+                        (progn
+                          (setq zone (SC3D:PPM-ZONE ppm standard))
+                          (princ (strcat "\nDistance : " (rtos d 2 2)))
+                          (princ (strcat "\nPPM associe : " (rtos ppm 2 0)))
+                          (princ (strcat "\n" (SC3D:PPM-ZONE-TEXT zone ppm standard)))
+
+                          (if (> d maxD)
+                            (princ (strcat "\nAttention : distance superieure a la distance max de la camera (" (rtos maxD 2 2) ")."))
+                          )
+                        )
+                        (princ "\nImpossible de calculer le PPM pour cette distance.")
+                      )
+                    )
+                  )
+                )
+              )
+            )
+            (princ "\nImpossible de lire les informations de cette camera.")
+          )
+        )
+        (princ "\nCe n'est pas une camera generee par S_CAMERA.")
+      )
+    )
+  )
+
+  (princ)
 )
 
 (defun SC3D:ASK-ROTATION (/ a)
@@ -2958,7 +3499,7 @@
         (setq base '(0.0 0.0 0.0))
       )
 
-      (SC3D:CREATE-CAMERA base vals)
+      (SC3D:CREATE-CAMERA-AUTO base vals)
     )
   )
 
@@ -2986,16 +3527,17 @@
                   (setq base (cdr (assoc 10 ed)))
                   (setq oldRot (cdr (assoc 'rot oldVals)))
 
-                  (setq a
-                    (getangle
-                      base
-                      (strcat
-                        "\nNouvelle rotation de la camera <"
-                        (rtos oldRot 2 2)
-                        " deg> : "
-                      )
-                    )
-                  )
+;; La rotation
+;;                  (setq a
+;;                    (getangle
+;;                      base
+;;                      (strcat
+;;                        "\nNouvelle rotation de la camera <"
+;;                        (rtos oldRot 2 2)
+;;                        " deg> : "
+;;                      )
+;;                    )
+;;                  )
 
                   (if a
                     (setq newRot (SC3D:RTD a))
@@ -3003,10 +3545,9 @@
                   )
 
                   (setq newVals (SC3D:SETVAL newVals 'rot newRot))
-
                   (SC3D:DELETE-TEXT-HANDLE oldVals)
                   (entdel e)
-                  (SC3D:CREATE-CAMERA base newVals)
+                  (SC3D:CREATE-CAMERA-AUTO base newVals)
                 )
               )
             )
@@ -3612,10 +4153,10 @@
 )
 
 (defun SC3D:MENU-CAMERA (/ choix)
-  (initget "C M J A S")
+  (initget "C M L J A S")
   (setq choix
     (getkword
-      "\nCamera - action [Creer/Modifier/aJuster/Ajouter/Supprimer] <C> : "
+      "\nCamera - action [Creer/Modifier/caLculer/aJuster/Ajouter/Supprimer] <C> : "
     )
   )
   (if (null choix)
@@ -3634,14 +4175,17 @@
     ((= choix "M")
       (SC3D:CMD-MODIFIER)
     )
+    ((= choix "L")
+      (SC3D:CMD-CALCULER)
+    )
+    ((= choix "J")
+      (SC3D:CMD-AJUSTER)
+    )
     ((= choix "A")
       (SC3D:CMD-AJOUTER)
     )
     ((= choix "S")
       (SC3D:CMD-SUPPRIMER)
-    )
-    ((= choix "J")
-      (SC3D:CMD-AJUSTER)
     )
   )
 
@@ -7639,4 +8183,6 @@
 
 (stab_regapp)
 (stab_start_reactor)
+
+
 
