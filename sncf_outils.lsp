@@ -6748,7 +6748,7 @@ Image source utilisee : " path))
 
   (if (>= dp 0)
     (progn
-      (draw-text (list (+ x) (+ y 5) 0) (strcat (rtos dp 2 2) "m") "0" 3 0)
+      (draw-text (list (+ x t2 5) (+ y) 0) (strcat "BQ:\\P" (rtos dp 2 2) "m") "0" 3 0)
     )
     (progn
       (princ "\nErreur : la distance doit etre superieure ou egale a 0.")
@@ -6786,7 +6786,7 @@ Image source utilisee : " path))
 
       ;; Hauteurs graphiques des bandes
 
-      (draw-quai-h pt "0" longueur 3)
+      (draw-quai-h pt "0" longueur 6)
       (princ "\nQuai cree avec succès")
 
       (menu-ajout-equipements pt 4)
