@@ -4275,19 +4275,6 @@
   )
 )
 
-(defun SIA:GetPropSafe (obj prop / r)
-  (if (and obj (vlax-property-available-p obj prop))
-    (progn
-      (setq r (vl-catch-all-apply 'vlax-get (list obj prop)))
-      (if (vl-catch-all-error-p r)
-        nil
-        r
-      )
-    )
-    nil
-  )
-)
-
 (defun SIA:Split (s sep / pos item result)
   (setq result nil)
 
@@ -4402,234 +4389,26 @@
 )
 
 ;; ============================================================
-;; RECUPERATION CHEMIN DEPUIS IMAGEDEF
+;; SELECTION IMAGE DEPUIS UN FICHIER
 ;; ============================================================
 
-(defun SIA:GetPathFromImageDef (defEnt / data path)
-  (if defEnt
-    (progn
-      (setq data (entget defEnt))
-
-      (setq path (cdr (assoc 1 data)))
-
-      (if (not (SIA:ValidString path))
-        (setq path (cdr (assoc 3 data)))
-      )
-
-      (if (not (SIA:ValidString path))
-        (setq path (cdr (assoc 2 data)))
-      )
-
-      (SIA:ResolvePath path)
-    )
-    nil
-  )
-)
-
-(defun SIA:GetPathFromImageEntity (ent / ed obj path defObj defEnt)
-  (if ent
-    (progn
-      (setq ed (entget ent))
-      (setq defEnt (cdr (assoc 340 ed)))
-
-      (if defEnt
-        (setq path (SIA:GetPathFromImageDef defEnt))
-      )
-
-      (if (not (SIA:ValidString path))
-        (progn
-          (setq obj (vlax-ename->vla-object ent))
-
-          (setq path (SIA:GetPropSafe obj 'ImageFile))
-
-          (if (not (SIA:ValidString path))
-            (setq path (SIA:GetPropSafe obj 'SourceFileName))
-          )
-
-          (if (not (SIA:ValidString path))
-            (progn
-              (setq defObj (SIA:GetPropSafe obj 'ImageDef))
-
-              (if defObj
-                (progn
-                  (setq path (SIA:GetPropSafe defObj 'SourceFileName))
-
-                  (if (not (SIA:ValidString path))
-                    (setq path (SIA:GetPropSafe defObj 'ImageFile))
-                  )
-
-                  (if (not (SIA:ValidString path))
-                    (setq path (SIA:GetPropSafe defObj 'FileName))
-                  )
-                )
-              )
-            )
-          )
-        )
-      )
-
-      (SIA:ResolvePath path)
-    )
-    nil
-  )
-)
-
-;; ============================================================
-;; RECHERCHE DANS LE DICTIONNAIRE ACAD_IMAGE_DICT
-;; ============================================================
-
-(defun SIA:GetAllImagePathsFromDictionary (/ dict item paths p)
-  (setq paths nil)
-  (setq dict (dictsearch (namedobjdict) "ACAD_IMAGE_DICT"))
-
-  (if dict
-    (progn
-      (foreach item dict
-        (if (or (= (car item) 350) (= (car item) 360))
-          (progn
-            (setq p (SIA:GetPathFromImageDef (cdr item)))
-
-            (if (SIA:ValidString p)
-              (setq paths (cons p paths))
-            )
-          )
-        )
-      )
-    )
-  )
-
-  (reverse paths)
-)
-
-(defun SIA:GetSingleImagePathFromDrawing (/ paths i p rep n)
-  (setq paths (SIA:GetAllImagePathsFromDictionary))
-
-  (cond
-    ((= (length paths) 1)
-      (car paths)
-    )
-
-    ((> (length paths) 1)
-      (progn
-        (princ "\nPlusieurs images sont referencees dans le dessin.")
-        (princ "\nListe des images trouvees :")
-
-        (setq i 1)
-
-        (foreach p paths
-          (princ
-            (strcat
-              "\n"
-              (itoa i)
-              " - "
-              p
-            )
-          )
-          (setq i (1+ i))
-        )
-
-        (setq rep
-          (getstring T
-            "\nEntrer le numero de l'image a utiliser <1> : "
-          )
-        )
-
-        (setq rep (SIA:Trim rep))
-
-        (if (= rep "")
-          (setq n 1)
-          (setq n (atoi rep))
-        )
-
-        (if (and (>= n 1) (<= n (length paths)))
-          (nth (1- n) paths)
-          (progn
-            (princ "\nNumero invalide.")
-            nil
-          )
-        )
-      )
-    )
-
-    (T nil)
-  )
-)
-
-;; ============================================================
-;; SELECTION IMAGE BRICSCAD
-;; ============================================================
-
-(defun SIA:GetImagePathFromSelection (/ sel ent ed typ path manual)
-  (setq sel
-    (nentsel
-      "\nSelectionner une image inseree dans BricsCAD ou Entrer pour choisir dans la liste : "
-    )
-  )
-
-  (if sel
-    (progn
-      (setq ent (car sel))
-      (setq ed (entget ent))
-      (setq typ (cdr (assoc 0 ed)))
-
-      (princ (strcat "\nType selectionne : " typ))
-
-      (cond
-        ((= typ "IMAGE")
-          (setq path (SIA:GetPathFromImageEntity ent))
-        )
-
-        ((= typ "OLE2FRAME")
-          (progn
-            (princ "\nL'objet selectionne est un OLE/copier-coller.")
-            (princ "\nIl n'a probablement pas de chemin image source recuperable.")
-            (setq path nil)
-          )
-        )
-
-        (T
-          (progn
-            (princ "\nL'objet selectionne n'est pas une image raster IMAGE.")
-            (setq path nil)
-          )
-        )
-      )
-    )
-  )
-
-  (if (not (SIA:ValidString path))
-    (progn
-      (princ "\nRecherche du chemin dans le dictionnaire interne des images...")
-      (setq path (SIA:GetSingleImagePathFromDrawing))
-    )
-  )
-
-  (if (not (SIA:ValidString path))
-    (progn
-      (initget "Oui Non")
-      (setq manual
-        (getkword
-          "\nImpossible de recuperer le chemin automatiquement. Choisir l'image manuellement ? [Oui/Non] <Oui> : "
-        )
-      )
-
-      (if (or (null manual) (= manual "Oui"))
-        (setq path
-          (getfiled
-            "Choisir le fichier image source"
-            ""
-            "png;jpg;jpeg;bmp;tif;tiff;webp"
-            0
-          )
-        )
-      )
+(defun SIA:GetImagePathFromFileDialog (/ path)
+  ;; Ouvre directement une fenetre Windows pour choisir l'image source.
+  ;; Ne cherche plus a selectionner/identifier une image inseree dans BricsCAD.
+  (setq path
+    (getfiled
+      "Choisir l'image a vectoriser"
+      ""
+      "png;jpg;jpeg;bmp;tif;tiff;webp"
+      0
     )
   )
 
   (if (SIA:ValidString path)
     (progn
       (setq path (SIA:ResolvePath path))
-      (princ (strcat "\nImage source utilisee : " path))
+      (princ (strcat "
+Image source utilisee : " path))
       path
     )
     nil
@@ -4824,7 +4603,7 @@
 
   (SIA:EnsureFolder bricscadFolder)
 
-  (setq imagePath (SIA:GetImagePathFromSelection))
+  (setq imagePath (SIA:GetImagePathFromFileDialog))
 
   (if (not (SIA:ValidString imagePath))
     (progn
