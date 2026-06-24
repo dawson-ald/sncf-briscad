@@ -6738,7 +6738,7 @@ Image source utilisee : " path))
   (setq x (car pt))
   (setq y (cadr pt))
 
-  (draw-line (list (- x t1) y 0) (list x y 0) layer "ISO07W100" 0.25)
+  (draw-line (list (+ x t1) y 0) (list x y 0) layer "ISO07W100" 0.25)
 
   (setq dp (getreal "\nEntrer la distance de depart <0> : "))
 
