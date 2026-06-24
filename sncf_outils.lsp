@@ -6756,7 +6756,7 @@ Image source utilisee : " path))
     )
   )
 
-  (draw-line (list (+ x) y 0) (list (+ x longueur) y 0) layer "Continuous" 1)
+  (draw-line (list (+ x) y 0) (list (+ x) (+ y longueur) 0) layer "Continuous" 1)
 
   (initget "O N")
     (setq heurtoir (getkword "\nY a-t-il un heurtoir au bout du quai ? [Oui/Non] <N> : "))
