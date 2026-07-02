@@ -716,6 +716,59 @@
   )
 )
 
+(defun draw-line-ep (p1 p2 layer ltype ltscale epaisseur / data ent lw)
+  (vl-load-com)
+
+  ;; Créer le calque si besoin
+  (if (not (tblsearch "LAYER" layer))
+    (make-layer layer 7)
+  )
+
+  ;; Si le type de ligne n'existe pas, utiliser Continuous
+  (if (or (null ltype) (not (tblsearch "LTYPE" ltype)))
+    (setq ltype "Continuous")
+  )
+
+  ;; Echelle type de ligne par defaut
+  (if (null ltscale)
+    (setq ltscale 1.0)
+  )
+
+  ;; Epaisseur de ligne
+  ;; DXF 370 = epaisseur en centiemes de mm
+  ;; Exemple : 0.25 mm -> 25
+  ;; -1 = ByLayer
+  (if (or (null epaisseur) (<= epaisseur 0))
+    (setq lw -1)
+    (setq lw (fix (* epaisseur 100.0)))
+  )
+
+  ;; Sécurité : vérifier que les deux points sont différents
+  (if (equal p1 p2 0.000001)
+    (progn
+      (princ "\nErreur : ligne non creee car les deux points sont identiques.")
+      nil
+    )
+    (progn
+      ;; Création directe de la ligne
+      (setq data
+        (list
+          (cons 0 "LINE")
+          (cons 8 layer)
+          (cons 10 p1)
+          (cons 11 p2)
+          (cons 6 ltype)
+          (cons 48 ltscale)
+          (cons 370 lw)
+        )
+      )
+
+      (setq ent (entmake data))
+      ent
+    )
+  )
+)
+
 (defun draw-line-color (p1 p2 layer ltype ltscale color / data ent)
   (vl-load-com)
 
@@ -804,6 +857,143 @@
       )
     )
   )
+)
+(defun pt-2d (p)
+  (list (car p) (cadr p) 0.0)
+)
+
+(defun draw-cotlin-perso (p1 p2 texte layer / pos decalage oldos oldlay dx dy sens dist)
+  ;; p1 = premier point mesure
+  ;; p2 = deuxieme point mesure
+  ;; texte = texte affiche dans la cotation
+  ;; layer = calque de la cotation
+  ;; sens = "H" ou "V" determine automatiquement
+
+  (setq p1 (pt-2d p1))
+  (setq p2 (pt-2d p2))
+
+  ;; Ecart horizontal / vertical
+  (setq dx (abs (- (car p2) (car p1))))
+  (setq dy (abs (- (cadr p2) (cadr p1))))
+
+  ;; Choix automatique du sens
+  (setq sens
+    (if (>= dx dy)
+      "H"
+      "V"
+    )
+  )
+
+  ;; Texte automatique selon le sens de cote
+  (if (or (null texte) (= texte ""))
+    (progn
+      (setq dist
+        (if (= sens "H")
+          dx
+          dy
+        )
+      )
+      (setq texte (strcat (rtos dist 2 2) " m"))
+    )
+  )
+
+  (if (or (null layer) (= layer ""))
+    (setq layer (getvar "CLAYER"))
+  )
+
+  ;; Cree le calque s'il n'existe pas
+  (if (not (tblsearch "LAYER" layer))
+    (command "_.-LAYER" "_M" layer "")
+  )
+
+  ;; Decalage de la cote
+  (setq decalage 2.0)
+
+  ;; Position de la ligne de cote
+  (cond
+    ;; Cote horizontale : on decale en Y
+    ((= sens "H")
+      (setq pos
+        (list
+          (/ (+ (car p1) (car p2)) 2.0)
+          (+ (max (cadr p1) (cadr p2)) decalage)
+          0.0
+        )
+      )
+    )
+
+    ;; Cote verticale : on decale en X
+    ((= sens "V")
+      (setq pos
+        (list
+          (+ (max (car p1) (car p2)) decalage)
+          (/ (+ (cadr p1) (cadr p2)) 2.0)
+          0.0
+        )
+      )
+    )
+  )
+
+  ;; Sauvegarde des variables
+  (setq oldos (getvar "OSMODE"))
+  (setq oldlay (getvar "CLAYER"))
+
+  ;; Active le calque voulu
+  (setvar "CLAYER" layer)
+
+  ;; Desactive les accrochages
+  (setvar "OSMODE" 0)
+
+  ;; Cote lineaire horizontale ou verticale
+  (command
+    "_.DIMLINEAR"
+    "_non" p1
+    "_non" p2
+    (if (= sens "H") "_H" "_V")
+    "_T" texte
+    "_non" pos
+  )
+
+  ;; Remet les variables comme avant
+  (setvar "OSMODE" oldos)
+  (setvar "CLAYER" oldlay)
+
+  (princ)
+)
+
+(defun draw-circle (pt rayon layer /)
+  ;; pt    = coordonnee du centre, exemple : (list 10 20 0)
+  ;; rayon = rayon du cercle
+  ;; layer = calque du cercle
+
+  ;; Creation du calque si inexistant
+  (if (not (tblsearch "LAYER" layer))
+    (entmake
+      (list
+        '(0 . "LAYER")
+        '(100 . "AcDbSymbolTableRecord")
+        '(100 . "AcDbLayerTableRecord")
+        (cons 2 layer)
+        '(70 . 0)
+        '(62 . 7)
+        '(6 . "Continuous")
+      )
+    )
+  )
+
+  ;; Creation du cercle
+  (entmake
+    (list
+      '(0 . "CIRCLE")
+      '(100 . "AcDbEntity")
+      (cons 8 layer)
+      '(100 . "AcDbCircle")
+      (cons 10 pt)
+      (cons 40 rayon)
+    )
+  )
+
+  (princ)
 )
 
 ;; ------------------------------------------------------------------------------------ O_MATHS ------------------------------------------------------------------------------------
@@ -5964,7 +6154,7 @@ Image source utilisee : " path))
         (getstring T "\nEntrer le texte de la pancarte  (\\ pour sauter une ligne) : "))
 
         (if (= texte_pancarte "")
-          (setq texte_pancarte "Vide")
+          (setq texte_pancarte "-")
         )
 
         (draw-line (list (+ x t2 ds) y 0) (list (+ x t2 ds) (+ y 8) 0) layer "Continuous" 1)
@@ -5976,7 +6166,7 @@ Image source utilisee : " path))
         (getstring T "\nEntrer le texte de la pancarte : "))
 
         (if (= texte_pancarte "")
-          (setq texte_pancarte "Vide")
+          (setq texte_pancarte "-")
         )
 
         (draw-line (list (+ x t2 ds) y 0) (list (+ x t2 ds) (+ y 8) 0) layer "Continuous" 1)
@@ -6730,6 +6920,788 @@ Image source utilisee : " path))
   (setq pt (getpoint "\nCliquez sur le point ou ajouter des equipements : "))
 
   (menu-ajout-equipements pt 0)
+
+  (princ)
+)
+
+(defun draw-camera-h (pt t2 ds layer / x y numero_cam) ;;Variable non def.
+  (setq x (car pt))
+  (setq y (cadr pt))
+
+  (initget "H B HB")
+  (setq c (getkword "\nL'orientation de la caméra ou des cameras ? [Haut/Bas/(HB)Haut-Bas] <H> : "))
+
+  ;; Valeur par défaut : Haut
+  (if (null c)
+    (setq c "H")
+  )
+
+  (setq dq (getreal "\nLa distance par rapport aux bords du quai ? <1.5> : "))
+
+  (if (null dq)
+    (setq dq 1.5)
+  )
+
+  (initget "E P R D")
+  (setq s (getkword "\nLe statut de la caméra ou des caméras ? [Existant/Pose/Repose/Depose] <E> : "))
+
+  (if (null s)
+    (setq s "E")
+  )
+
+  (cond
+    ((= s "E")
+      (setq layer "TL_MATERIEL_EXISTANT")
+    )
+
+    ((= s "P")
+      (setq layer "TL_MATERIEL_POSE")
+    )
+
+    ((= s "R")
+      (setq layer "TL_MATERIEL_REPOSE")
+    )
+
+    ((= s "D")
+      (setq layer "TL_MATERIEL_DEPOSE")
+    )
+  )
+
+  (cond
+  ;; HAUT
+  ((= c "H")
+    (progn
+      (draw-line (list (+ x 13) (+ y ds) 0) (list (+ x 13 2.4) (+ y ds) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 13) (+ y ds) 0) (list (+ x 13 1.2) (- (+ y ds) 2.4) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 13 2.4) (+ y ds) 0) (list (+ x 13 1.2) (- (+ y ds) 2.4) 0) layer "Continuous" 1)
+
+      (draw-rect (list (- (+ x 13) 1.2) (- (+ y ds) 2.4) 0) (list (+ x 13 3.6) (- (+ y ds) 2.4 9.6) 0) layer)
+
+      (setq numero_cam (getstring T "\nEntrer le numéro de la camera (ex. C1) : "))  
+      (if (= numero_cam "")
+        (setq numero_cam "?")
+      )
+
+      (draw-text (list (+ x 11.8 2.4) (- (+ y ds) 7) 0) (strcat numero_cam) layer 2 0)
+      (draw-mtext (list (+ x 13 1.2 3) (+ y ds 2) 0) (strcat (rtos ds 2 2) "m") layer 2 0 20)
+
+      (draw-cotlin-perso (list (+ x) (- (+ y ds) 9) 0) (list (+ x 11.80) (- (+ y ds) 9) 0) (strcat (rtos dq 2 2) "m") layer)
+
+      (initget "O N")
+      (setq chmp (getkword "\nVoulez-vous afficher le champ de vision de la camera ? [Oui/Non] <O> : "))
+
+      (if (null chmp)
+        (setq chmp "O")
+      )
+
+      (cond
+        ((= chmp "O")
+          (hatch-poly4-color (list (+ x 88) (+ y ds) 0) (list (+ x 88 2.6 2.6) (+ y ds 13.5) 0) (list (+ x 88 2.6 2.6) (+ y ds 13.5 50) 0) (list (+ x 88) (+ y ds 13.5 50) 0) layer 231) 
+          (draw-poly4 (list (+ x 88) (+ y ds) 0) (list (+ x 88 2.6 2.6) (+ y ds 13.5) 0) (list (+ x 88 2.6 2.6) (+ y ds 13.5 50) 0) (list (+ x 88) (+ y ds 13.5 50) 0) layer) 
+          (draw-mtext (list (+ x 88 2.6) (+ y ds 31.75) 0) numero_cam layer 2 0 20)
+        )
+      )
+
+      (initget "M S R")
+      (setq h_q (getkword "\nSur quoi la camera est-elle accrochée ? [Mat/Suspente/Rien] <M> : "))
+
+      (if (null h_q)
+        (setq h_q "M")
+      )
+
+      (cond
+        ((= h_q "M")
+          (setq h_cam_no_m "")
+          (setq h_cam (getreal "\nLa hauteur de la camera en m (ex. 1.5) : "))
+         
+
+          ;; QUAI
+          (draw-line (list (+ x 33) (- (+ y ds) 16.42) 0) (list (+ x 33 10) (- (+ y ds) 16.42) 0) layer "Continuous" 1)
+          (draw-mtext (list (+ x 30) (- (+ y ds) 16.42) 0) "Quai" layer 2 0 15)
+
+          ;; MAT
+          (draw-line (list (+ x 33 10 2.34) (- (+ y ds) 16.42) 0) (list (+ x 33 10 2.34 3.60) (- (+ y ds) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20) (- (+ y ds) 16.42) 0) (list (+ x 33 10 2.34 1.20) (- (+ y ds 1.20) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 1.20) (- (+ y ds) 16.42) 0) (list (+ x 33 10 2.34 1.20 1.20) (- (+ y ds 1.20) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20) (- (+ y ds 1.20) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24) (- (+ y ds 1.20) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 1.20) (- (+ y ds 1.20) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24) (- (+ y ds 1.20) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24) (- (+ y ds 1.20) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 1.20) 0.24) (- (+ y ds 1.20) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 1.20) 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 0.37) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80 1.20) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 1.20) 16.42 0.37) 0) layer "Continuous" 1)
+          (draw-rect (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 0.37) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46) 16.42) 0) layer)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22 0.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.80) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) layer "Continuous" 1)
+
+          ;; CAM
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20 1.30) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20 1.30 3.25) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) layer "Continuous" 1)
+          (draw-mtext (list (- (+ x 33 10 2.34 1.20 0.24 0.24 1.63) 2.18 3.20 1.30 3.25) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62 1.5) 16.42) 0) numero_cam layer 2 0 20)
+
+          (if (null h_cam)
+            ;; SI h_cam est nil
+            (progn
+              (setq h_cam_no_m "")
+              (draw-cotlin-perso
+                (list (- (+ x 33 5.71) 1.93) (- (+ y ds) 16.42) 0)
+                (list (- (+ x 33 5.71) 1.93) (- (+ y ds 18.25) 16.42) 0)
+                "...m"
+                layer
+              )
+            )
+
+            ;; SINON h_cam existe
+            (draw-cotlin-perso
+              (list (- (+ x 33 5.71) 1.93) (- (+ y ds) 16.42) 0)
+              (list (- (+ x 33 5.71) 1.93) (- (+ y ds 18.25) 16.42) 0)
+              (strcat (rtos h_cam 2 2) "m")
+              layer
+            )
+          )
+        )
+
+        ((= h_q "S")
+          (setq h_cam_no_m "")
+          (setq h_cam (getreal "\nLa hauteur de la camera en m (ex. 1.5) : "))
+         
+
+          ;; QUAI
+          (draw-line (list (+ x 33) (- (+ y ds) 16.42) 0) (list (+ x 33 10) (- (+ y ds) 16.42) 0) layer "Continuous" 1)
+          (draw-mtext (list (+ x 30) (- (+ y ds) 16.42) 0) "Quai" layer 2 0 15)
+
+          ;; MAT
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) layer "Continuous" 1)
+
+          (draw-rect (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24 0.24 2 2) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60 1) 16.42) 0) layer)
+          (hatch-poly4-pattern (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24 0.24 2 2) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60 1) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24 0.24 2 2) (- (+ y ds 1.20 10.80 9.60 1) 16.42) 0) layer 7 "ANSI31" 0.25)
+
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) layer "Continuous" 1)
+
+
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 0.37) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80 1.20) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 1.20) 16.42 0.37) 0) layer "Continuous" 1)
+          (draw-rect (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 0.37) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46) 16.42) 0) layer)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22 0.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.80) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) layer "Continuous" 1)
+
+          ;; CAM
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20 1.30) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20 1.30 3.25) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) layer "Continuous" 1)
+          (draw-mtext (list (- (+ x 33 10 2.34 1.20 0.24 0.24 1.63) 2.18 3.20 1.30 3.25) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62 1.5) 16.42) 0) numero_cam layer 2 0 20)
+
+          (if (null h_cam)
+            ;; SI h_cam est nil
+            (progn
+              (setq h_cam_no_m "")
+              (draw-cotlin-perso
+                (list (- (+ x 33 5.71) 1.93) (- (+ y ds) 16.42) 0)
+                (list (- (+ x 33 5.71) 1.93) (- (+ y ds 18.25) 16.42) 0)
+                "...m"
+                layer
+              )
+            )
+
+            ;; SINON h_cam existe
+            (draw-cotlin-perso
+              (list (- (+ x 33 5.71) 1.93) (- (+ y ds) 16.42) 0)
+              (list (- (+ x 33 5.71) 1.93) (- (+ y ds 18.25) 16.42) 0)
+              (strcat (rtos h_cam 2 2) "m")
+              layer
+            )
+          )
+        )
+      )
+    )
+  )
+
+  ;; BAS
+  ((= c "B")
+    (progn
+      (draw-line (list (+ x 13) (+ y ds) 0) (list (+ x 13 2.4) (+ y ds) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 13) (+ y ds) 0) (list (+ x 13 1.2) (+ y ds 2.4) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 13 2.4) (+ y ds) 0) (list (+ x 13 1.2) (+ y ds 2.4) 0) layer "Continuous" 1)
+
+      (draw-rect (list (- (+ x 13) 1.2) (+ y ds 2.4) 0) (list (+ x 13 3.6) (+ y ds 2.4 9.6) 0) layer)
+
+      (setq numero_cam (getstring T "\nEntrer le numéro de la camera (ex. C1) : "))  
+      (if (= numero_cam "")
+        (setq numero_cam "?")
+      )
+
+      (draw-text (list (+ x 11.8 2.4) (+ y ds 7) 0) (strcat numero_cam) layer 2 0)
+      (draw-mtext (list (+ x 13 1.2 3) (- (+ y ds) 2) 0) (strcat (rtos ds 2 2) "m") layer 2 0 20)
+
+      (draw-cotlin-perso (list (+ x) (+ y ds 5) 0) (list (+ x 11.80) (+ y ds 5) 0) (strcat (rtos dq 2 2) "m") layer)
+
+      (initget "O N")
+      (setq chmp (getkword "\nVoulez-vous afficher le champ de vision de la camera ? [Oui/Non] <O> : "))
+
+      (if (null chmp)
+        (setq chmp "O")
+      )
+
+      (cond
+        ((= chmp "O")
+          (hatch-poly4-color (list (+ x 88 5.20) (+ y ds) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5 50) 0) (list (+ x 88 5.20) (- (+ y ds) 13.5 50) 0) layer 231) 
+          (draw-poly4 (list (+ x 88 5.20) (+ y ds) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5 50) 0) (list (+ x 88 5.20) (- (+ y ds) 13.5 50) 0) layer) 
+          (draw-mtext (list (+ x 88 5.20 2.6) (- (+ y ds) 31.75) 0) numero_cam layer 2 0 20)
+        )
+      )
+
+      (initget "M S R")
+      (setq h_q (getkword "\nSur quoi la camera est-elle accrochée ? [Mat/Suspente/Rien] <M> : "))
+
+      (if (null h_q)
+        (setq h_q "M")
+      )
+
+      (cond
+        ((= h_q "M")
+          (setq h_cam_no_m "")
+          (setq h_cam (getreal "\nLa hauteur de la camera en m (ex. 1.5) : "))
+         
+
+          ;; QUAI
+          (draw-line (list (+ x 33) (- (+ y ds) 16.42) 0) (list (+ x 33 10) (- (+ y ds) 16.42) 0) layer "Continuous" 1)
+          (draw-mtext (list (+ x 30) (- (+ y ds) 16.42) 0) "Quai" layer 2 0 15)
+
+          ;; MAT
+          (draw-line (list (+ x 33 10 2.34) (- (+ y ds) 16.42) 0) (list (+ x 33 10 2.34 3.60) (- (+ y ds) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20) (- (+ y ds) 16.42) 0) (list (+ x 33 10 2.34 1.20) (- (+ y ds 1.20) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 1.20) (- (+ y ds) 16.42) 0) (list (+ x 33 10 2.34 1.20 1.20) (- (+ y ds 1.20) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20) (- (+ y ds 1.20) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24) (- (+ y ds 1.20) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 1.20) (- (+ y ds 1.20) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24) (- (+ y ds 1.20) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24) (- (+ y ds 1.20) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 1.20) 0.24) (- (+ y ds 1.20) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 1.20) 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 0.37) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80 1.20) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 1.20) 16.42 0.37) 0) layer "Continuous" 1)
+          (draw-rect (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 0.37) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46) 16.42) 0) layer)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22 0.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.80) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) layer "Continuous" 1)
+
+          ;; CAM
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20 1.30) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20 1.30 3.25) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) layer "Continuous" 1)
+          (draw-mtext (list (- (+ x 33 10 2.34 1.20 0.24 0.24 1.63) 2.18 3.20 1.30 3.25) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62 1.5) 16.42) 0) numero_cam layer 2 0 20)
+
+          (if (null h_cam)
+            ;; SI h_cam est nil
+            (progn
+              (setq h_cam_no_m "")
+              (draw-cotlin-perso
+                (list (- (+ x 33 5.71) 1.93) (- (+ y ds) 16.42) 0)
+                (list (- (+ x 33 5.71) 1.93) (- (+ y ds 18.25) 16.42) 0)
+                "...m"
+                layer
+              )
+            )
+
+            ;; SINON h_cam existe
+            (draw-cotlin-perso
+              (list (- (+ x 33 5.71) 1.93) (- (+ y ds) 16.42) 0)
+              (list (- (+ x 33 5.71) 1.93) (- (+ y ds 18.25) 16.42) 0)
+              (strcat (rtos h_cam 2 2) "m")
+              layer
+            )
+          )
+        )
+
+        ((= h_q "S")
+          (setq h_cam_no_m "")
+          (setq h_cam (getreal "\nLa hauteur de la camera en m (ex. 1.5) : "))
+         
+
+          ;; QUAI
+          (draw-line (list (+ x 33) (- (+ y ds) 16.42) 0) (list (+ x 33 10) (- (+ y ds) 16.42) 0) layer "Continuous" 1)
+          (draw-mtext (list (+ x 30) (- (+ y ds) 16.42) 0) "Quai" layer 2 0 15)
+
+          ;; MAT
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) layer "Continuous" 1)
+
+          (draw-rect (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24 0.24 2 2) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60 1) 16.42) 0) layer)
+          (hatch-poly4-pattern (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24 0.24 2 2) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60 1) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24 0.24 2 2) (- (+ y ds 1.20 10.80 9.60 1) 16.42) 0) layer 7 "ANSI31" 0.25)
+
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) layer "Continuous" 1)
+
+
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 0.37) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80 1.20) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 1.20) 16.42 0.37) 0) layer "Continuous" 1)
+          (draw-rect (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 0.37) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46) 16.42) 0) layer)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22 0.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.80) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) layer "Continuous" 1)
+
+          ;; CAM
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20 1.30) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20 1.30 3.25) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) layer "Continuous" 1)
+          (draw-mtext (list (- (+ x 33 10 2.34 1.20 0.24 0.24 1.63) 2.18 3.20 1.30 3.25) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62 1.5) 16.42) 0) numero_cam layer 2 0 20)
+
+          (if (null h_cam)
+            ;; SI h_cam est nil
+            (progn
+              (setq h_cam_no_m "")
+              (draw-cotlin-perso
+                (list (- (+ x 33 5.71) 1.93) (- (+ y ds) 16.42) 0)
+                (list (- (+ x 33 5.71) 1.93) (- (+ y ds 18.25) 16.42) 0)
+                "...m"
+                layer
+              )
+            )
+
+            ;; SINON h_cam existe
+            (draw-cotlin-perso
+              (list (- (+ x 33 5.71) 1.93) (- (+ y ds) 16.42) 0)
+              (list (- (+ x 33 5.71) 1.93) (- (+ y ds 18.25) 16.42) 0)
+              (strcat (rtos h_cam 2 2) "m")
+              layer
+            )
+          )
+        )
+      )
+
+    )
+  )
+
+  ;; HAUT-BAS
+  ((= c "HB")
+    (progn
+      ;; HAUT
+      (draw-line (list (+ x 13) (+ y ds) 0) (list (+ x 13 2.4) (+ y ds) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 13) (+ y ds) 0) (list (+ x 13 1.2) (- (+ y ds) 2.4) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 13 2.4) (+ y ds) 0) (list (+ x 13 1.2) (- (+ y ds) 2.4) 0) layer "Continuous" 1)
+
+      (draw-rect (list (- (+ x 13) 1.2) (- (+ y ds) 2.4) 0) (list (+ x 13 3.6) (- (+ y ds) 2.4 9.6) 0) layer)
+
+      (setq numero_cam_1 (getstring T "\nEntrer le numéro de la camera du haut (ex. C2) : "))  
+      (if (= numero_cam_1 "")
+        (setq numero_cam_1 "?")
+      )
+
+      (draw-text (list (+ x 11.8 2.4) (- (+ y ds) 7) 0) (strcat numero_cam_1) layer 2 0)
+      (draw-mtext (list (+ x 13 1.2 1.2 6 4.80) (+ y ds) 0) (strcat (rtos ds 2 2) "m") layer 2 0 20)
+
+      (draw-cotlin-perso (list (+ x) (- (+ y ds) 9) 0) (list (+ x 11.80) (- (+ y ds) 9) 0) (strcat (rtos dq 2 2) "m") layer)
+
+      (initget "O N")
+      (setq chmp (getkword "\nVoulez-vous afficher le champ de vision de la camera du haut ? [Oui/Non] <O> : "))
+
+      (if (null chmp)
+        (setq chmp "O")
+      )
+
+      (cond
+        ((= chmp "O")
+          (hatch-poly4-color (list (+ x 88) (+ y ds) 0) (list (+ x 88 2.6 2.6) (+ y ds 13.5) 0) (list (+ x 88 2.6 2.6) (+ y ds 13.5 50) 0) (list (+ x 88) (+ y ds 13.5 50) 0) layer 231) 
+          (draw-poly4 (list (+ x 88) (+ y ds) 0) (list (+ x 88 2.6 2.6) (+ y ds 13.5) 0) (list (+ x 88 2.6 2.6) (+ y ds 13.5 50) 0) (list (+ x 88) (+ y ds 13.5 50) 0) layer) 
+          (draw-mtext (list (+ x 88 2.6) (+ y ds 31.75) 0) numero_cam_1 layer 2 0 20)
+        )
+      )
+
+      ;; BAS
+
+      (draw-line (list (+ x 13 4.80) (+ y ds) 0) (list (+ x 13 2.4 4.80) (+ y ds) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 13 4.80) (+ y ds) 0) (list (+ x 13 1.2 4.80) (+ y ds 2.4) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 13 2.4 4.80) (+ y ds) 0) (list (+ x 13 1.2 4.80) (+ y ds 2.4) 0) layer "Continuous" 1)
+
+      (draw-rect (list (- (+ x 13 4.80) 1.2) (+ y ds 2.4) 0) (list (+ x 13 3.6 4.80) (+ y ds 2.4 9.6) 0) layer)
+
+      (setq numero_cam_2 (getstring T "\nEntrer le numéro de la camera (ex. C1) : "))  
+      (if (= numero_cam_2 "")
+        (setq numero_cam_2 "?")
+      )
+
+      (draw-text (list (+ x 11.8 2.4 4.80) (+ y ds 7) 0) (strcat numero_cam_2) layer 2 0)
+
+      (draw-cotlin-perso (list (+ x) (+ y ds 5) 0) (list (+ x 11.80 4.80) (+ y ds 5) 0) (strcat (rtos dq 2 2) "m") layer)
+
+      (initget "O N")
+      (setq chmp (getkword "\nVoulez-vous afficher le champ de vision de la camera ? [Oui/Non] <O> : "))
+
+      (if (null chmp)
+        (setq chmp "O")
+      )
+
+      (cond
+        ((= chmp "O")
+          (hatch-poly4-color (list (+ x 88 5.20) (+ y ds) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5 50) 0) (list (+ x 88 5.20) (- (+ y ds) 13.5 50) 0) layer 231) 
+          (draw-poly4 (list (+ x 88 5.20) (+ y ds) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5 50) 0) (list (+ x 88 5.20) (- (+ y ds) 13.5 50) 0) layer) 
+          (draw-mtext (list (+ x 88 5.20 2.6) (- (+ y ds) 31.75) 0) numero_cam_2 layer 2 0 20)
+        )
+      )
+
+      (initget "M S R")
+      (setq h_q (getkword "\nSur quoi la camera est-elle accrochée ? [Mat/Suspente/Rien] <M> : "))
+
+      (if (null h_q)
+        (setq h_q "M")
+      )
+
+      (cond
+        ((= h_q "M")
+          (setq h_cam_no_m "")
+          (setq h_cam (getreal "\nLa hauteur de la camera en m (ex. 1.5) : "))
+         
+
+          ;; QUAI
+          (draw-line (list (+ x 33) (- (+ y ds) 16.42) 0) (list (+ x 33 10) (- (+ y ds) 16.42) 0) layer "Continuous" 1)
+          (draw-mtext (list (+ x 30) (- (+ y ds) 16.42) 0) "Quai" layer 2 0 15)
+
+          ;; MAT
+          (draw-line (list (+ x 33 10 2.34) (- (+ y ds) 16.42) 0) (list (+ x 33 10 2.34 3.60) (- (+ y ds) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20) (- (+ y ds) 16.42) 0) (list (+ x 33 10 2.34 1.20) (- (+ y ds 1.20) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 1.20) (- (+ y ds) 16.42) 0) (list (+ x 33 10 2.34 1.20 1.20) (- (+ y ds 1.20) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20) (- (+ y ds 1.20) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24) (- (+ y ds 1.20) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 1.20) (- (+ y ds 1.20) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24) (- (+ y ds 1.20) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24) (- (+ y ds 1.20) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 1.20) 0.24) (- (+ y ds 1.20) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 1.20) 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 0.37) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80 1.20) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 1.20) 16.42 0.37) 0) layer "Continuous" 1)
+          (draw-rect (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 0.37) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46) 16.42) 0) layer)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22 0.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.80) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) layer "Continuous" 1)
+
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40 1.20) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40 1.20) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22 0.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24 1.20) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.80 1.20) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) layer "Continuous" 1)
+
+          ;; CAM
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20 1.30) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20 1.30 3.25) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) layer "Continuous" 1)
+          (draw-mtext (list (- (+ x 33 10 2.34 1.20 0.24 0.24 1.63) 2.18 3.20 1.30 3.25) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62 1.5) 16.42) 0) (strcat numero_cam_1 " - " numero_cam_2) layer 2 0 20)
+
+          (if (null h_cam)
+            ;; SI h_cam est nil
+            (progn
+              (setq h_cam_no_m "")
+              (draw-cotlin-perso
+                (list (- (+ x 33 5.71) 1.93) (- (+ y ds) 16.42) 0)
+                (list (- (+ x 33 5.71) 1.93) (- (+ y ds 18.25) 16.42) 0)
+                "...m"
+                layer
+              )
+            )
+
+            ;; SINON h_cam existe
+            (draw-cotlin-perso
+              (list (- (+ x 33 5.71) 1.93) (- (+ y ds) 16.42) 0)
+              (list (- (+ x 33 5.71) 1.93) (- (+ y ds 18.25) 16.42) 0)
+              (strcat (rtos h_cam 2 2) "m")
+              layer
+            )
+          )
+        )
+
+        ((= h_q "S")
+          (setq h_cam_no_m "")
+          (setq h_cam (getreal "\nLa hauteur de la camera en m (ex. 1.5) : "))
+         
+
+          ;; QUAI
+          (draw-line (list (+ x 33) (- (+ y ds) 16.42) 0) (list (+ x 33 10) (- (+ y ds) 16.42) 0) layer "Continuous" 1)
+          (draw-mtext (list (+ x 30) (- (+ y ds) 16.42) 0) "Quai" layer 2 0 15)
+
+          ;; MAT
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) layer "Continuous" 1)
+
+          (draw-rect (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24 0.24 2 2) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60 1) 16.42) 0) layer)
+          (hatch-poly4-pattern (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24 0.24 2 2) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24) (- (+ y ds 1.20 10.80 9.60 1) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 1.20 2) 0.24 0.24 0.24 2 2) (- (+ y ds 1.20 10.80 9.60 1) 16.42) 0) layer 7 "ANSI31" 0.25)
+
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (+ x 33 10 2.34 1.20 0.24 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) layer "Continuous" 1)
+
+
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 0.37) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 33 10 2.34 1.20 0.24 0.24) (- (+ y ds 1.20 10.80 4.80 1.20) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 1.20) 16.42 0.37) 0) layer "Continuous" 1)
+          (draw-rect (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18) (- (+ y ds 1.20 10.80 4.80 0.37) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46) 16.42) 0) layer)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22 0.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.80) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) layer "Continuous" 1)
+
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40 1.20) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.40 1.20) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.22 0.80) 16.42) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24 1.20) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24 0.80 1.20) 2.18 3.20) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) layer "Continuous" 1)
+
+          ;; CAM
+          (draw-line (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20 1.30) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) (list (- (+ x 33 10 2.34 1.20 0.24 0.24) 2.18 3.20 1.30 3.25) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62) 16.42) 0) layer "Continuous" 1)
+          (draw-mtext (list (- (+ x 33 10 2.34 1.20 0.24 0.24 1.63) 2.18 3.20 1.30 3.25) (- (+ y ds 1.20 10.80 4.80 0.37 0.46 0.62 1.5) 16.42) 0) (strcat numero_cam_1 " - " numero_cam_2) layer 2 0 20)
+
+          (if (null h_cam)
+            ;; SI h_cam est nil
+            (progn
+              (setq h_cam_no_m "")
+              (draw-cotlin-perso
+                (list (- (+ x 33 5.71) 1.93) (- (+ y ds) 16.42) 0)
+                (list (- (+ x 33 5.71) 1.93) (- (+ y ds 18.25) 16.42) 0)
+                "...m"
+                layer
+              )
+            )
+
+            ;; SINON h_cam existe
+            (draw-cotlin-perso
+              (list (- (+ x 33 5.71) 1.93) (- (+ y ds) 16.42) 0)
+              (list (- (+ x 33 5.71) 1.93) (- (+ y ds 18.25) 16.42) 0)
+              (strcat (rtos h_cam 2 2) "m")
+              layer
+            )
+          )
+        )
+      )
+
+    )
+  )
+  )
+)
+
+(defun draw-pancarte-h (pt t2 ds layer / x y c)
+  (setq x (car pt))
+  (setq y (cadr pt))
+
+  (initget "1 2 3")
+  (setq c (getkword "\nQuel type de pancarte ? (1 - Une pancarte / 2 - Deux pancartes côte à côte / 3 - Deux pancartes l'une au-dessus de l'autre) [1/2/3] <1> : "))
+
+  ;; Valeur par défaut : 1
+  (if (null c)
+    (setq c "1")
+  )
+
+  (cond
+    ((= c "1")
+      (draw-line-ep (list (+ x 12.20) (+ y ds) 0) (list (+ x 12.20 4) (+ y ds) 0) layer "Continuous" 1 0.60)
+      (draw-line (list (+ x 12.20 4) (+ y ds) 0) (list (+ x 12.20 4 3.3) (+ y ds) 0) layer "Continuous" 1)
+      (draw-circle (list (+ x 12.20 4 3.3 1.3) (+ y ds) 0) 1.3 layer)
+      (draw-line (list (+ x 12.20 4 3.3 0.65) (+ y ds 1.13) 0) (list (+ x 12.20 4 3.3 1.95) (- (+ y ds) 1.13) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 12.20 4 3.3 0.65) (- (+ y ds) 1.13) 0) (list (+ x 12.20 4 3.3 1.95) (+ y ds 1.13) 0) layer "Continuous" 1)
+      (draw-circle (list (+ x 12.20 4 3.3 2.6 2) (+ y ds) 0) 2 layer)
+      (draw-circle (list (+ x 12.20 4 3.3 2.6 2 2 1.3) (+ y ds) 0) 1.3 layer)
+      (draw-line (list (+ x 12.20 4 3.3 0.65 6.61) (+ y ds 1.13) 0) (list (+ x 12.20 4 3.3 1.95 6.61) (- (+ y ds) 1.13) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 12.20 4 3.3 0.65 6.61) (- (+ y ds) 1.13) 0) (list (+ x 12.20 4 3.3 1.95 6.61) (+ y ds 1.13) 0) layer "Continuous" 1)
+
+      (draw-mtext (list (+ x 12.20 4 3.3 2.6 2 2 1.3 1) (- (+ y ds) 3) 0) (strcat (rtos ds 2 2) "m") layer 2 0 20)
+
+      (draw-line (list (+ x 12.20 2) (+ y ds 1) 0) (list (- (+ x 12.20 2) 0.48) (+ y ds 1 0.96) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 12.20 2) (+ y ds 1) 0) (list (+ x 12.20 2 0.48) (+ y ds 1 0.96) 0) layer "Continuous" 1)
+      (draw-line (list (- (+ x 12.20 2) 0.48) (+ y ds 1 0.96) 0) (list (- (+ x 12.20 2 0.96) 0.48) (+ y ds 1 0.96) 0) layer "Continuous" 1)
+      (draw-line (list (- (+ x 12.20 2 0.48) 0.48) (+ y ds 1 0.96) 0) (list (- (+ x 12.20 2 0.48) 0.48) (+ y ds 1 0.96 3.36) 0) layer "Continuous" 1)
+      (draw-line (list (- (+ x 12.20 2 0.48) 0.48) (+ y ds 1 0.96 3.36) 0) (list (- (+ x 12.20 2 0.48) 0.48 4) (+ y ds 1 0.96 3.36) 0) layer "Continuous" 1)
+
+      (setq texte_pancarte
+      (getstring T "\nEntrer le texte de la pancarte  (\\ pour sauter une ligne) : "))
+
+      (if (= texte_pancarte "")
+        (setq texte_pancarte "-")
+      )
+
+      (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1) 0) texte_pancarte layer 1 0 20)
+    )
+  )
+)
+
+
+(defun menu-ajout-equipements-h (pt t2 / choix ds_eq)
+  (setq choix "")
+
+  (while (/= choix "Q")
+    (initget "P C A N O Q")
+    (setq choix
+      (getkword
+        "\nAjouter un equipement ? [Pancarte/Camera/cAtenaire/aNtenne/crOcodile/Quitter] <Q> : "
+      )
+    )
+
+    ;; Si Entrée, on quitte
+    (if (null choix)
+      (setq choix "Q")
+    )
+
+    (cond
+      ;; Pancarte de signalisation
+      ((= choix "P")
+        (setq ds_eq (getreal "\nLa distance où se trouve la pancarte à partir du début du quai (0 m) : "))
+        (if ds_eq
+          (progn
+            (if (>= ds_eq 0)
+              (progn
+                (draw-pancarte-h pt t2 ds_eq "0")
+              )
+              (progn
+                (princ "\nErreur : la distance doit etre superieure ou egale a 0.")
+              )
+            )
+          )
+          (progn
+            (princ "\nErreur : Aucun distance donnée.")
+          )
+        )
+      )
+
+      ;; Camera
+      ((= choix "C")
+        (setq ds_eq (getreal "\nLa distance où se trouve la caméra à partir du début du quai (0 m) : "))
+        (if ds_eq
+          (progn
+            (if (>= ds_eq 0)
+              (progn
+                (draw-camera-h pt t2 ds_eq "0")
+              )
+              (progn
+                (princ "\nErreur : la distance doit etre superieure ou egale a 0.")
+              )
+            )
+          )
+          (progn
+            (princ "\nErreur : Aucun distance donnée.")
+          )
+        )
+      )
+
+      ;; Catenaire
+      ((= choix "A")
+        (setq ds_eq (getreal "\nLa distance où se trouve la catenaire à partir du début du quai (0 m) : "))
+        (if ds_eq
+          (progn
+            (if (>= ds_eq 0)
+              (progn
+                (draw-catenaire pt t2 ds_eq "0")
+              )
+              (progn
+                (princ "\nErreur : la distance doit etre superieure ou egale a 0.")
+              )
+            )
+          )
+          (progn
+            (princ "\nErreur : Aucun distance donnée.")
+          )
+        )
+      )
+
+      ;; Catenaire
+      ((= choix "N")
+        (setq ds_eq (getreal "\nLa distance où se trouve l'antenne à partir du début du quai (0 m) : "))
+        (if ds_eq
+          (progn
+            (if (>= ds_eq 0)
+              (progn
+                (draw-antenne pt t2 ds_eq "0")
+              )
+              (progn
+                (princ "\nErreur : la distance doit etre superieure ou egale a 0.")
+              )
+            )
+          )
+          (progn
+            (princ "\nErreur : Aucun distance donnée.")
+          )
+        )
+      )
+
+      ((= choix "O")
+        (setq ds_eq (getreal "\nLa distance où se trouve le crocodile à partir du début du quai (0 m) : "))
+        (if ds_eq
+          (progn
+            (if (>= ds_eq 0)
+              (progn
+                (draw-crocodile pt t2 ds_eq "0")
+              )
+              (progn
+                (princ "\nErreur : la distance doit etre superieure ou egale a 0.")
+              )
+            )
+          )
+          (progn
+            (princ "\nErreur : Aucun distance donnée.")
+          )
+        )
+      )
+
+      ;; Quitter
+      ((= choix "Q")
+        (princ "\nFin de l'ajout des equipements.")
+      )
+    )
+  )
+)
+
+
+(defun draw-quai-h (pt layer longueur t1 / x y dp heurtoir)
+  (setq x (car pt))
+  (setq y (cadr pt))
+
+  (draw-line (list (+ x t1) y 0) (list x y 0) layer "ISO07W100" 0.25)
+
+  (setq dp (getreal "\nEntrer la distance de depart <0> : "))
+
+  (if (null dp)
+    (setq dp 0)
+  )
+
+  (if (>= dp 0)
+    (progn
+      (draw-mtext (list (+ x t1 5) (+ y) 0) (strcat "BQ:\\P" (rtos dp 2 2) " m") "0" 1.5 0 20)
+    )
+    (progn
+      (princ "\nErreur : la distance doit etre superieure ou egale a 0.")
+      (exit)
+    )
+  )
+
+  (draw-line (list (+ x) y 0) (list (+ x) (+ y longueur) 0) layer "Continuous" 1)
+
+  (initget "O N")
+    (setq heurtoir (getkword "\nY a-t-il un heurtoir au bout du quai ? [Oui/Non] <N> : "))
+
+    (if (= heurtoir "O")
+      (progn
+        (draw-line (list (+ x) (+ y longueur) 0) (list (- x 7) (+ y longueur) 0) layer "Continuous" 1)
+        (draw-line (list (- x 7) (+ y longueur) 0) (list (- x 7) (+ y longueur 2) 0) layer "Continuous" 1)
+        (draw-line (list (- x 7) (+ y longueur 2) 0) (list (+ x) (+ y longueur 2) 0) layer "Continuous" 1)
+
+        (draw-line (list (- x 3.5) (- (+ y longueur) 1) 0) (list (- x 3.5) (+ y longueur) 0) layer "Continuous" 1)
+        (draw-line (list (- x 3.5) (- (+ y longueur) 1) 0) (list (- x 3.5 2) (- (+ y longueur) 1) 0) layer "Continuous" 1)
+        (draw-line (list (- x 3.5 2) (- (+ y longueur) 1) 0) (list (- x 3.5 2) (- (+ y longueur 1) 1) 0) layer "Continuous" 1)
+      )
+    )
+
+  ;; VOIE
+  (draw-line (list (- x 8.5) y 0) (list (- x 8.5) (- (+ y longueur) 1) 0) layer "Continuous" 1)
+  (draw-line (list (- x 8.5 7) y 0) (list (- x 8.5 7) (- (+ y longueur) 1) 0) layer "Continuous" 1)
+
+  (setq ds 4.8) ;; Premiere traverse
+
+  (while (<= ds longueur)
+    (draw-line (list (- x 6) (+ y ds) 0) (list (- x 18) (+ y ds) 0) layer "Continuous" 1)
+    (setq ds (+ ds 4.8))
+  )
+
+)
+
+(defun c:S_QUAI_HAUT (/ longueur pt x y heurtoir heurtoir_pt texte_pt)
+  (make-layer "TL_MATERIEL_EXISTANT" 7)
+  (make-layer "TL_MATERIEL_POSE" 12)
+  (make-layer "TL_MATERIEL_REPOSE" 94)
+  (make-layer "TL_MATERIEL_DEPOSE" 40)
+
+  (setq longueur (getreal "\nEntrer la longueur du quai en metres : "))
+
+  (if (and longueur (> longueur 0))
+    (progn
+      (setq pt (getpoint "\nCliquer le point de depart du quai : "))
+
+      ;; Hauteurs graphiques des bandes
+
+      (draw-quai-h pt "0" longueur 6)
+      (princ "\nQuai cree avec succès")
+
+      (menu-ajout-equipements-h pt 0)
+      
+    )
+    (princ "\nErreur : la longueur doit etre superieure a 0.")
+  )
 
   (princ)
 )
