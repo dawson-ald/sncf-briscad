@@ -7723,14 +7723,15 @@ Image source utilisee : " path))
                   layer
           )
 
-          (draw-line (list (+ x 44.24) (- (+ y ds) 4.10) 0) (list (+ x 44.24 3.60) (- (+ y ds) 4.10) 0) layer "Continuous" 1)
-          (draw-line (list (+ x 44.24 1.43) (- (+ y ds) 4.10) 0) (list (+ x 44.24 1.43 0.16) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
-          (draw-line (list (+ x 44.24 2.17) (- (+ y ds) 4.10) 0) (list (- (+ x 44.24 2.17) 0.16) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
-          (draw-line (list (+ x 44.24 1.59) (- (+ y ds 9.10) 4.10) 0) (list (+ x 44.24 1.59 0.42) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 44.24 1.43) (- (+ y ds) 4.10) 0) (list (+ x 44.24 2.17) (- (+ y ds) 4.10) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 44.24 1.43) (- (+ y ds) 4.10) 0) (list (+ x 44.24 1.43) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 44.24 2.17) (- (+ y ds) 4.10) 0) (list (+ x 44.24 2.17) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
+          (draw-rect (list (- (+ x 44.24 1.43) 1.63) (- (+ y ds 9.10) 4.10) 0) (list (+ x 44.24 1.43 2.37) (- (+ y ds 9.10 2) 4.10) 0) layer)
+          (hatch-poly4-pattern (list (- (+ x 44.24 1.43) 1.63) (- (+ y ds 9.10) 4.10) 0) (list (- (+ x 44.24 1.43 4) 1.63) (- (+ y ds 9.10) 4.10) 0) (list (+ x 44.24 1.43 2.37) (- (+ y ds 9.10 2) 4.10) 0) (list (- (+ x 44.24 1.43 2.37) 4) (- (+ y ds 9.10 2) 4.10) 0) layer 7 "ANSI31" 0.25)
 
           (draw-rect (list (+ x 37.85) (+ y ds 4.34) 0) (list (+ x 41.84) (+ y ds 0.30) 0) layer)
-          (draw-line (list (+ x 41.84) (+ y ds 0.30 1.01) 0) (list (+ x 41.84 3.93) (+ y ds 0.30 1.01) 0) layer "Continuous" 1)
-          (draw-line (list (+ x 41.84) (+ y ds 0.30 3.03) 0) (list (+ x 41.84 3.96) (+ y ds 0.30 3.03) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 41.84) (+ y ds 0.30 1.01) 0) (list (+ x 41.84 3.83) (+ y ds 0.30 1.01) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 41.84) (+ y ds 0.30 3.03) 0) (list (+ x 41.84 3.83) (+ y ds 0.30 3.03) 0) layer "Continuous" 1)
 
           (draw-mtext (list (+ x 39.84) (+ y ds 2.32) 0) texte_pancarte layer 1 0 20)
         )
