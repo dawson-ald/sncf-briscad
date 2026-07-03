@@ -7620,59 +7620,121 @@ Image source utilisee : " path))
 
   (cond
     ((= c "1")
-      (draw-line-ep (list (+ x 12.20) (+ y ds) 0) (list (+ x 12.20 4) (+ y ds) 0) layer "Continuous" 1 0.60)
-      (draw-line (list (+ x 12.20 4) (+ y ds) 0) (list (+ x 12.20 4 3.3) (+ y ds) 0) layer "Continuous" 1)
-      (draw-circle (list (+ x 12.20 4 3.3 1.3) (+ y ds) 0) 1.3 layer)
-      (draw-line (list (+ x 12.20 4 3.3 0.65) (+ y ds 1.13) 0) (list (+ x 12.20 4 3.3 1.95) (- (+ y ds) 1.13) 0) layer "Continuous" 1)
-      (draw-line (list (+ x 12.20 4 3.3 0.65) (- (+ y ds) 1.13) 0) (list (+ x 12.20 4 3.3 1.95) (+ y ds 1.13) 0) layer "Continuous" 1)
-      (draw-circle (list (+ x 12.20 4 3.3 2.6 2) (+ y ds) 0) 2 layer)
-      (draw-circle (list (+ x 12.20 4 3.3 2.6 2 2 1.3) (+ y ds) 0) 1.3 layer)
-      (draw-line (list (+ x 12.20 4 3.3 0.65 6.61) (+ y ds 1.13) 0) (list (+ x 12.20 4 3.3 1.95 6.61) (- (+ y ds) 1.13) 0) layer "Continuous" 1)
-      (draw-line (list (+ x 12.20 4 3.3 0.65 6.61) (- (+ y ds) 1.13) 0) (list (+ x 12.20 4 3.3 1.95 6.61) (+ y ds 1.13) 0) layer "Continuous" 1)
 
-      (draw-mtext (list (+ x 12.20 4 3.3 2.6 2 2 1.3 1) (- (+ y ds) 3) 0) (strcat (rtos ds 2 2) "m") layer 2 0 20)
+      (initget "M S")
+      (setq h_q (getkword "\nSur quoi la camera est-elle accrochée ? [Mat/Suspente] <M> : "))
 
-      (draw-line (list (+ x 12.20 2) (+ y ds 1) 0) (list (- (+ x 12.20 2) 0.48) (+ y ds 1 0.96) 0) layer "Continuous" 1)
-      (draw-line (list (+ x 12.20 2) (+ y ds 1) 0) (list (+ x 12.20 2 0.48) (+ y ds 1 0.96) 0) layer "Continuous" 1)
-      (draw-line (list (- (+ x 12.20 2) 0.48) (+ y ds 1 0.96) 0) (list (- (+ x 12.20 2 0.96) 0.48) (+ y ds 1 0.96) 0) layer "Continuous" 1)
-      (draw-line (list (- (+ x 12.20 2 0.48) 0.48) (+ y ds 1 0.96) 0) (list (- (+ x 12.20 2 0.48) 0.48) (+ y ds 1 0.96 3.36) 0) layer "Continuous" 1)
-      (draw-line (list (- (+ x 12.20 2 0.48) 0.48) (+ y ds 1 0.96 3.36) 0) (list (- (+ x 12.20 2 0.48) 0.48 4) (+ y ds 1 0.96 3.36) 0) layer "Continuous" 1)
-
-      (setq texte_pancarte
-      (getstring T "\nEntrer le texte de la pancarte  (\\ pour sauter une ligne) : "))
-
-      (if (= texte_pancarte "")
-        (setq texte_pancarte "-")
+      (if (null h_q)
+        (setq h_q "M")
       )
 
-      (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1) 0) texte_pancarte layer 1 0 20)
+      (cond
+        ((= h_q "M")
+          (draw-line-ep (list (+ x 12.20) (+ y ds) 0) (list (+ x 12.20 4) (+ y ds) 0) layer "Continuous" 1 0.60)
+          (draw-line (list (+ x 12.20 4) (+ y ds) 0) (list (+ x 12.20 4 3.3) (+ y ds) 0) layer "Continuous" 1)
+          (draw-circle (list (+ x 12.20 4 3.3 1.3) (+ y ds) 0) 1.3 layer)
+          (draw-line (list (+ x 12.20 4 3.3 0.65) (+ y ds 1.13) 0) (list (+ x 12.20 4 3.3 1.95) (- (+ y ds) 1.13) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 12.20 4 3.3 0.65) (- (+ y ds) 1.13) 0) (list (+ x 12.20 4 3.3 1.95) (+ y ds 1.13) 0) layer "Continuous" 1)
+          (draw-circle (list (+ x 12.20 4 3.3 2.6 2) (+ y ds) 0) 2 layer)
+          (draw-circle (list (+ x 12.20 4 3.3 2.6 2 2 1.3) (+ y ds) 0) 1.3 layer)
+          (draw-line (list (+ x 12.20 4 3.3 0.65 6.61) (+ y ds 1.13) 0) (list (+ x 12.20 4 3.3 1.95 6.61) (- (+ y ds) 1.13) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 12.20 4 3.3 0.65 6.61) (- (+ y ds) 1.13) 0) (list (+ x 12.20 4 3.3 1.95 6.61) (+ y ds 1.13) 0) layer "Continuous" 1)
 
-      (draw-line (list (+ x 12.20 2) (- (+ y ds) 1) 0) (list (+ x 12.20 2) (- (+ y ds) 1 2.50) 0) layer "Continuous" 1)
+          (draw-mtext (list (+ x 12.20 4 3.3 2.6 2 2 1.3 1) (- (+ y ds) 3) 0) (strcat (rtos ds 2 2) "m") layer 2 0 20)
 
-      (setq ds_p "")
-      (setq ds_p (getstring "\nLa distance par rapport aux bords du quai ? (ex: 1.5) <...> : "))
+          (draw-line (list (+ x 12.20 2) (+ y ds 1) 0) (list (- (+ x 12.20 2) 0.48) (+ y ds 1 0.96) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 12.20 2) (+ y ds 1) 0) (list (+ x 12.20 2 0.48) (+ y ds 1 0.96) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 12.20 2) 0.48) (+ y ds 1 0.96) 0) (list (- (+ x 12.20 2 0.96) 0.48) (+ y ds 1 0.96) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 12.20 2 0.48) 0.48) (+ y ds 1 0.96) 0) (list (- (+ x 12.20 2 0.48) 0.48) (+ y ds 1 0.96 3.36) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 12.20 2 0.48) 0.48) (+ y ds 1 0.96 3.36) 0) (list (- (+ x 12.20 2 0.48) 0.48 4) (+ y ds 1 0.96 3.36) 0) layer "Continuous" 1)
 
-      (if (= ds_p "")
-        (setq ds_p "...")
+          (setq texte_pancarte
+          (getstring T "\nEntrer le texte de la pancarte  (\\ pour sauter une ligne) : "))
+
+          (if (= texte_pancarte "")
+            (setq texte_pancarte "-")
+          )
+
+          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1) 0) texte_pancarte layer 1 0 20)
+
+          (draw-line (list (+ x 12.20 2) (- (+ y ds) 1) 0) (list (+ x 12.20 2) (- (+ y ds) 1 2.50) 0) layer "Continuous" 1)
+
+          (setq ds_p "")
+          (setq ds_p (getstring "\nLa distance par rapport aux bords du quai ? (ex: 1.5) <...> : "))
+
+          (if (= ds_p "")
+            (setq ds_p "...")
+          )
+
+          (draw-cotlin-perso
+                  (list (- (+ x 12.20 2.5) 14.20 0.5) (- (+ y ds) 1 1.25 2) 0)
+                  (list (- (+ x 12.20 2.5) 0.5) (- (+ y ds) 1 1.25 2) 0)
+                  (strcat ds_p "m")
+                  layer
+          )
+
+          (draw-line (list (+ x 44.24) (- (+ y ds) 4.10) 0) (list (+ x 44.24 3.60) (- (+ y ds) 4.10) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 44.24 1.43) (- (+ y ds) 4.10) 0) (list (+ x 44.24 1.43 0.16) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 44.24 2.17) (- (+ y ds) 4.10) 0) (list (- (+ x 44.24 2.17) 0.16) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 44.24 1.59) (- (+ y ds 9.10) 4.10) 0) (list (+ x 44.24 1.59 0.42) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
+
+          (draw-rect (list (+ x 37.85) (+ y ds 4.34) 0) (list (+ x 41.84) (+ y ds 0.30) 0) layer)
+          (draw-line (list (+ x 41.84) (+ y ds 0.30 1.01) 0) (list (+ x 41.84 3.93) (+ y ds 0.30 1.01) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 41.84) (+ y ds 0.30 3.03) 0) (list (+ x 41.84 3.96) (+ y ds 0.30 3.03) 0) layer "Continuous" 1)
+
+          (draw-mtext (list (+ x 39.84) (+ y ds 2.32) 0) texte_pancarte layer 1 0 20)
+        )
+        ((= h_q "S")
+          (draw-line-ep (list (+ x 12.20) (+ y ds) 0) (list (+ x 12.20 4) (+ y ds) 0) layer "Continuous" 1 0.60)
+          (draw-line (list (+ x 12.20 4) (+ y ds) 0) (list (+ x 12.20 4 3.3) (+ y ds) 0) layer "Continuous" 1)
+          (draw-rect (list (+ x 12.20 4 3.3) (+ y ds 1.50) 0) (list (+ x 12.20 4 3.3 6) (- (+ y ds) 1.5) 0) layer)
+          (hatch-poly4-pattern (list (+ x 12.20 4 3.3) (+ y ds 1.50) 0) (list (+ x 12.20 4 3.3 6) (+ y ds 1.50) 0) (list (+ x 12.20 4 3.3 6) (- (+ y ds) 1.5) 0) (list (+ x 12.20 4 3.3) (- (+ y ds) 1.5) 0) layer 7 "ANSI31" 0.25)
+
+          (draw-mtext (list (+ x 12.20 4 3.3 2.6 2 2 1.3 1) (- (+ y ds) 3) 0) (strcat (rtos ds 2 2) "m") layer 2 0 20)
+
+          (draw-line (list (+ x 12.20 2) (+ y ds 1) 0) (list (- (+ x 12.20 2) 0.48) (+ y ds 1 0.96) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 12.20 2) (+ y ds 1) 0) (list (+ x 12.20 2 0.48) (+ y ds 1 0.96) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 12.20 2) 0.48) (+ y ds 1 0.96) 0) (list (- (+ x 12.20 2 0.96) 0.48) (+ y ds 1 0.96) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 12.20 2 0.48) 0.48) (+ y ds 1 0.96) 0) (list (- (+ x 12.20 2 0.48) 0.48) (+ y ds 1 0.96 3.36) 0) layer "Continuous" 1)
+          (draw-line (list (- (+ x 12.20 2 0.48) 0.48) (+ y ds 1 0.96 3.36) 0) (list (- (+ x 12.20 2 0.48) 0.48 4) (+ y ds 1 0.96 3.36) 0) layer "Continuous" 1)
+
+          (setq texte_pancarte
+          (getstring T "\nEntrer le texte de la pancarte  (\\ pour sauter une ligne) : "))
+
+          (if (= texte_pancarte "")
+            (setq texte_pancarte "-")
+          )
+
+          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1) 0) texte_pancarte layer 1 0 20)
+
+          (draw-line (list (+ x 12.20 2) (- (+ y ds) 1) 0) (list (+ x 12.20 2) (- (+ y ds) 1 2.50) 0) layer "Continuous" 1)
+
+          (setq ds_p "")
+          (setq ds_p (getstring "\nLa distance par rapport aux bords du quai ? (ex: 1.5) <...> : "))
+
+          (if (= ds_p "")
+            (setq ds_p "...")
+          )
+
+          (draw-cotlin-perso
+                  (list (- (+ x 12.20 2.5) 14.20 0.5) (- (+ y ds) 1 1.25 2) 0)
+                  (list (- (+ x 12.20 2.5) 0.5) (- (+ y ds) 1 1.25 2) 0)
+                  (strcat ds_p "m")
+                  layer
+          )
+
+          (draw-line (list (+ x 44.24) (- (+ y ds) 4.10) 0) (list (+ x 44.24 3.60) (- (+ y ds) 4.10) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 44.24 1.43) (- (+ y ds) 4.10) 0) (list (+ x 44.24 1.43 0.16) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 44.24 2.17) (- (+ y ds) 4.10) 0) (list (- (+ x 44.24 2.17) 0.16) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 44.24 1.59) (- (+ y ds 9.10) 4.10) 0) (list (+ x 44.24 1.59 0.42) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
+
+          (draw-rect (list (+ x 37.85) (+ y ds 4.34) 0) (list (+ x 41.84) (+ y ds 0.30) 0) layer)
+          (draw-line (list (+ x 41.84) (+ y ds 0.30 1.01) 0) (list (+ x 41.84 3.93) (+ y ds 0.30 1.01) 0) layer "Continuous" 1)
+          (draw-line (list (+ x 41.84) (+ y ds 0.30 3.03) 0) (list (+ x 41.84 3.96) (+ y ds 0.30 3.03) 0) layer "Continuous" 1)
+
+          (draw-mtext (list (+ x 39.84) (+ y ds 2.32) 0) texte_pancarte layer 1 0 20)
+        )
       )
-
-      (draw-cotlin-perso
-              (list (- (+ x 12.20 2.5) 14.20 0.5) (- (+ y ds) 1 1.25 2) 0)
-              (list (- (+ x 12.20 2.5) 0.5) (- (+ y ds) 1 1.25 2) 0)
-              (strcat ds_p "m")
-              layer
-      )
-
-      (draw-line (list (+ x 44.24) (- (+ y ds) 4.10) 0) (list (+ x 44.24 3.60) (- (+ y ds) 4.10) 0) layer "Continuous" 1)
-      (draw-line (list (+ x 44.24 1.43) (- (+ y ds) 4.10) 0) (list (+ x 44.24 1.43 0.16) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
-      (draw-line (list (+ x 44.24 2.17) (- (+ y ds) 4.10) 0) (list (- (+ x 44.24 2.17) 0.16) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
-      (draw-line (list (+ x 44.24 1.59) (- (+ y ds 9.10) 4.10) 0) (list (+ x 44.24 1.59 0.42) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
-
-      (draw-rect (list (+ x 37.85) (+ y ds 4.34) 0) (list (+ x 41.84) (+ y ds 0.30) 0) layer)
-      (draw-line (list (+ x 41.84) (+ y ds 0.30 1.01) 0) (list (+ x 41.84 3.93) (+ y ds 0.30 1.01) 0) layer "Continuous" 1)
-      (draw-line (list (+ x 41.84) (+ y ds 0.30 3.03) 0) (list (+ x 41.84 3.96) (+ y ds 0.30 3.03) 0) layer "Continuous" 1)
-
-      (draw-mtext (list (+ x 39.84) (+ y ds 2.32) 0) texte_pancarte layer 1 0 20)
     )
   )
 )
