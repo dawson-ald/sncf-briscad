@@ -1876,6 +1876,8 @@
 
 (setq *SC3D_STD_LIST* '("2014" "2025"))
 (setq *SC3D_VIEW_LIST* '("Vue du dessus" "Vue de cote"))
+(setq *SC3D_HACHURE_PATTERNS* '("ANSI31" "ANSI32" "ANSI33" "ANSI34" "ANSI35" "ANSI36" "ANSI37" "ANSI38" "ANGLE"))
+(setq *SC3D_RAND_SEED* nil)
 
 (defun SC3D:VIEW-LABEL->CODE (v)
   (if (= v "Vue de cote") "SIDE" "TOP")
@@ -1883,6 +1885,30 @@
 
 (defun SC3D:VIEW-CODE->LABEL (v)
   (if (= v "SIDE") "Vue de cote" "Vue du dessus")
+)
+
+(defun SC3D:INIT-RAND ()
+  (setq *SC3D_RAND_SEED* (abs (fix (* (getvar "CDATE") 100000000))))
+)
+
+(defun SC3D:RAND ()
+  (if (null *SC3D_RAND_SEED*) (SC3D:INIT-RAND))
+  (setq *SC3D_RAND_SEED*
+    (fix (abs (rem (+ (* (float *SC3D_RAND_SEED*) 1103515245.0) 12345.0) 2147483647.0)))
+  )
+  *SC3D_RAND_SEED*
+)
+
+(defun SC3D:RAND-ITEM (lst)
+  (nth (fix (rem (SC3D:RAND) (length lst))) lst)
+)
+
+(defun SC3D:RAND-HATCH ()
+  (setq *SC3D_CUR_HATCH_PAT* (SC3D:RAND-ITEM *SC3D_HACHURE_PATTERNS*))
+  (setq *SC3D_CUR_HATCH_COL* (fix (+ 1 (rem (SC3D:RAND) 254))))
+  (while (or (= *SC3D_CUR_HATCH_COL* 7) (= *SC3D_CUR_HATCH_COL* 0))
+    (setq *SC3D_CUR_HATCH_COL* (fix (+ 1 (rem (SC3D:RAND) 254))))
+  )
 )
 
 (defun SC3D:DTR (a) (* *SC3D_PI* (/ a 180.0)))
@@ -2162,22 +2188,27 @@
   (if b "1" "0")
 )
 
-(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view)
-  (setq manu  (cdr (assoc 'manu vals)))
-  (setq model (cdr (assoc 'model vals)))
-  (setq fmt   (cdr (assoc 'fmt vals)))
-  (setq focal (cdr (assoc 'focal vals)))
-  (setq res   (cdr (assoc 'res vals)))
-  (setq dist  (cdr (assoc 'dist vals)))
-  (setq camh  (cdr (assoc 'camh vals)))
-  (setq objh  (cdr (assoc 'objh vals)))
-  (setq rot   (cdr (assoc 'rot vals)))
-  (setq std   (cdr (assoc 'std vals)))
-  (setq grid  (cdr (assoc 'grid vals)))
-  (setq trans (cdr (assoc 'trans vals)))
-  (setq view  (cdr (assoc 'view vals)))
+(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view useHatch hatchPat hatchCol)
+  (setq manu     (cdr (assoc 'manu vals)))
+  (setq model    (cdr (assoc 'model vals)))
+  (setq fmt      (cdr (assoc 'fmt vals)))
+  (setq focal    (cdr (assoc 'focal vals)))
+  (setq res      (cdr (assoc 'res vals)))
+  (setq dist     (cdr (assoc 'dist vals)))
+  (setq camh     (cdr (assoc 'camh vals)))
+  (setq objh     (cdr (assoc 'objh vals)))
+  (setq rot      (cdr (assoc 'rot vals)))
+  (setq std      (cdr (assoc 'std vals)))
+  (setq grid     (cdr (assoc 'grid vals)))
+  (setq trans    (cdr (assoc 'trans vals)))
+  (setq view     (cdr (assoc 'view vals)))
+  (setq useHatch (cdr (assoc 'use_hatch vals)))
+  (setq hatchPat (cdr (assoc 'hatch_pattern vals)))
+  (setq hatchCol (cdr (assoc 'hatch_color vals)))
 
-  (if (null view) (setq view "TOP"))
+  (if (null view)     (setq view "TOP"))
+  (if (null hatchPat) (setq hatchPat "ANSI31"))
+  (if (null hatchCol) (setq hatchCol 1))
 
   (strcat
     manu "|"
@@ -2194,7 +2225,10 @@
     (SC3D:BOOLSTR grid) "|"
     (rtos trans 2 6) "|"
     textHandle "|"
-    view
+    view "|"
+    (SC3D:BOOLSTR useHatch) "|"
+    hatchPat "|"
+    (itoa hatchCol)
   )
 )
 
@@ -2217,6 +2251,9 @@
       (cons 'trans (SC3D:ATOF (nth 12 p) 60.0))
       (cons 'texth (if (> (length p) 13) (nth 13 p) ""))
       (cons 'view (if (> (length p) 14) (nth 14 p) "TOP"))
+      (cons 'use_hatch (if (> (length p) 15) (= (nth 15 p) "1") nil))
+      (cons 'hatch_pattern (if (> (length p) 16) (nth 16 p) "ANSI31"))
+      (cons 'hatch_color (if (> (length p) 17) (atoi (nth 17 p)) 1))
     )
     nil
   )
@@ -2297,6 +2334,11 @@
   (write-line "      : popup_list { key = \"view\"; label = \"Vue\"; width = 22; }" f)
   (write-line "      : toggle { key = \"grid\"; label = \"Afficher la grille\"; }" f)
   (write-line "      : edit_box { key = \"trans\"; label = \"Transparence (0-90%)\"; edit_width = 10; }" f)
+  (write-line "      : toggle { key = \"use_hatch\"; label = \"Hachure unique (vue du dessus, au lieu des zones PPM)\"; }" f)
+  (write-line "      : row {" f)
+  (write-line "        : text { key = \"hatch_info\"; label = \"Motif : ANSI31  Couleur : 1\"; width = 38; }" f)
+  (write-line "        : button { key = \"btn_regen\"; label = \"Generer\"; width = 10; }" f)
+  (write-line "      }" f)
   (write-line "    }" f)
 
   (write-line "    : errtile { key = \"msg\"; }" f)
@@ -2306,6 +2348,20 @@
 
   (close f)
   fn
+)
+
+(defun SC3D:DLG-HATCH-UPDATE ()
+  (if (= (get_tile "use_hatch") "1")
+    (mode_tile "btn_regen" 0)
+    (mode_tile "btn_regen" 1)
+  )
+)
+
+(defun SC3D:DLG-REGEN-HATCH ()
+  (SC3D:RAND-HATCH)
+  (set_tile "hatch_info"
+    (strcat "Motif : " *SC3D_CUR_HATCH_PAT* "  Couleur ACI : " (itoa *SC3D_CUR_HATCH_COL*))
+  )
 )
 
 (defun SC3D:SET-POPUP-LIST (key lst val)
@@ -2392,6 +2448,9 @@
     (cons 'view (SC3D:VIEW-LABEL->CODE (nth (atoi (get_tile "view")) *SC3D_VIEW_LIST*)))
     (cons 'grid (= (get_tile "grid") "1"))
     (cons 'trans (SC3D:ATOF (get_tile "trans") 60.0))
+    (cons 'use_hatch (= (get_tile "use_hatch") "1"))
+    (cons 'hatch_pattern (if *SC3D_CUR_HATCH_PAT* *SC3D_CUR_HATCH_PAT* "ANSI31"))
+    (cons 'hatch_color (if *SC3D_CUR_HATCH_COL* *SC3D_CUR_HATCH_COL* 1))
   )
 )
 
@@ -2489,6 +2548,12 @@
           (set_tile "objh" (rtos (cdr (assoc 'objh def)) 2 2))
           (set_tile "grid" (if (cdr (assoc 'grid def)) "1" "0"))
           (set_tile "trans" (rtos (cdr (assoc 'trans def)) 2 0))
+
+          (setq *SC3D_CUR_HATCH_PAT* (cdr (assoc 'hatch_pattern def)))
+          (setq *SC3D_CUR_HATCH_COL* (cdr (assoc 'hatch_color def)))
+          (if (null *SC3D_CUR_HATCH_PAT*) (setq *SC3D_CUR_HATCH_PAT* "ANSI31"))
+          (if (null *SC3D_CUR_HATCH_COL*) (setq *SC3D_CUR_HATCH_COL* 1))
+          (set_tile "use_hatch" (if (cdr (assoc 'use_hatch def)) "1" "0"))
         )
         (progn
           (set_tile "manu" "0")
@@ -2504,13 +2569,22 @@
           (set_tile "objh" "2.5")
           (set_tile "grid" "0")
           (set_tile "trans" "60")
+          (set_tile "use_hatch" "0")
+          (SC3D:RAND-HATCH)
         )
       )
+
+      (set_tile "hatch_info"
+        (strcat "Motif : " *SC3D_CUR_HATCH_PAT* "  Couleur ACI : " (itoa *SC3D_CUR_HATCH_COL*))
+      )
+      (mode_tile "btn_regen" (if (= (get_tile "use_hatch") "1") 0 1))
 
       (SC3D:CAM-DLG-APPLY)
 
       (action_tile "manu" "(SC3D:CAM-DLG-UPDATE-MODELS)")
       (action_tile "model" "(SC3D:CAM-DLG-APPLY)")
+      (action_tile "use_hatch" "(SC3D:DLG-HATCH-UPDATE)")
+      (action_tile "btn_regen" "(SC3D:DLG-REGEN-HATCH)")
       (action_tile "accept" "(SC3D:ACCEPT-DLG)")
       (action_tile "cancel" "(done_dialog 0)")
 
@@ -2599,6 +2673,7 @@
   (SC3D:LAYER "SC3D_AXE" 7)
   (SC3D:LAYER "SC3D_TEXTES" 7)
   (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
+  (SC3D:LAYER "SC3D_HACHURE" 3)
   (SC3D:LAYER "SC3D_NON_VISIBLE" 1)
   (SC3D:LAYER "SC3D_PPM_1500" 1)
   (SC3D:LAYER "SC3D_PPM_1000" 6)
@@ -3095,7 +3170,70 @@
   )
 )
 
-(defun SC3D:CREATE-BLOCK-GEOM (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD)
+(defun SC3D:DRAW-HATCH-FOV (maxD nearD tanH tilt camH objH patName aci / wMax w1 npts pts midX)
+  (setq wMax (SC3D:HALF-WIDTH-JVSG maxD tanH tilt camH objH))
+
+  (if (<= nearD 0.0)
+    (progn
+      (setq npts 3)
+      (setq pts
+        (list
+          (list 0.0 0.0)
+          (list maxD (- wMax))
+          (list maxD wMax)
+        )
+      )
+    )
+    (progn
+      (setq w1 (SC3D:CONE-HALF-WIDTH nearD maxD tanH tilt camH objH))
+      (setq npts 4)
+      (setq pts
+        (list
+          (list nearD (- w1))
+          (list nearD w1)
+          (list maxD wMax)
+          (list maxD (- wMax))
+        )
+      )
+    )
+  )
+
+  (setq midX (/ (apply '+ (mapcar 'car pts)) (float npts)))
+
+  (entmake
+    (append
+      (list
+        '(0 . "HATCH")
+        '(100 . "AcDbEntity")
+        (cons 8 "SC3D_HACHURE")
+        (cons 62 aci)
+        '(100 . "AcDbHatch")
+        '(10 0.0 0.0 0.0)
+        '(210 0.0 0.0 1.0)
+        (cons 2 patName)
+        '(70 . 0)
+        '(71 . 0)
+        '(91 . 1)
+        '(92 . 2)
+        '(72 . 0)
+        '(73 . 1)
+        (cons 93 npts)
+      )
+      (mapcar '(lambda (pt) (cons 10 pt)) pts)
+      (list
+        '(75 . 0)
+        '(76 . 1)
+        '(52 . 0.0)
+        '(41 . 0.20)
+        '(47 . 1.0)
+        '(98 . 1)
+        (cons 10 (list midX 0.0))
+      )
+    )
+  )
+)
+
+(defun SC3D:CREATE-BLOCK-GEOM (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD useHatch hatchPat hatchCol)
   (setq maxD     (cdr (assoc 'dist vals)))
   (setq camH     (cdr (assoc 'camh vals)))
   (setq objH     (cdr (assoc 'objh vals)))
@@ -3107,6 +3245,12 @@
   (setq tanV     (cdr (assoc 'tanV calc)))
   (setq tilt     (cdr (assoc 'tilt calc)))
   (setq nearD    (cdr (assoc 'nearD calc)))
+  (setq useHatch (cdr (assoc 'use_hatch vals)))
+  (setq hatchPat (cdr (assoc 'hatch_pattern vals)))
+  (setq hatchCol (cdr (assoc 'hatch_color vals)))
+
+  (if (null hatchPat) (setq hatchPat "ANSI31"))
+  (if (null hatchCol) (setq hatchCol 1))
 
   (if (< trans 0.0) (setq trans 0.0))
   (if (> trans 90.0) (setq trans 90.0))
@@ -3130,6 +3274,10 @@
   )
 
   (SC3D:DRAW-PPM resW maxD nearD tanH tanV tilt camH objH standard trans)
+
+  (if useHatch
+    (SC3D:DRAW-HATCH-FOV maxD nearD tanH tilt camH objH hatchPat hatchCol)
+  )
 
   (if showGrid
     (SC3D:GRID maxD tanH tilt camH objH)
@@ -6936,10 +7084,10 @@ Image source utilisee : " path))
     (setq c "H")
   )
 
-  (setq dq (getreal "\nLa distance par rapport aux bords du quai ? <1.5> : "))
+  (setq dq (getstring "\nLa distance par rapport aux bords du quai ? <...> : "))
 
-  (if (null dq)
-    (setq dq 1.5)
+  (if (= dq "")
+    (setq dq "...")
   )
 
   (initget "E P R D")
@@ -6985,7 +7133,7 @@ Image source utilisee : " path))
       (draw-text (list (+ x 11.8 2.4) (- (+ y ds) 7) 0) (strcat numero_cam) layer 2 0)
       (draw-mtext (list (+ x 13 1.2 3) (+ y ds 2) 0) (strcat (rtos ds 2 2) "m") layer 2 0 20)
 
-      (draw-cotlin-perso (list (+ x) (- (+ y ds) 9) 0) (list (+ x 11.80) (- (+ y ds) 9) 0) (strcat (rtos dq 2 2) "m") layer)
+      (draw-cotlin-perso (list (+ x) (- (+ y ds) 9) 0) (list (+ x 11.80) (- (+ y ds) 9) 0) (strcat dq "m") layer)
 
       (initget "O N")
       (setq chmp (getkword "\nVoulez-vous afficher le champ de vision de la camera ? [Oui/Non] <O> : "))
@@ -7498,6 +7646,33 @@ Image source utilisee : " path))
       )
 
       (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1) 0) texte_pancarte layer 1 0 20)
+
+      (draw-line (list (+ x 12.20 2) (- (+ y ds) 1) 0) (list (+ x 12.20 2) (- (+ y ds) 1 2.50) 0) layer "Continuous" 1)
+
+      (setq ds_p "")
+      (setq ds_p (getstring "\nLa distance par rapport aux bords du quai ? (ex: 1.5) <...> : "))
+
+      (if (= ds_p "")
+        (setq ds_p "...")
+      )
+
+      (draw-cotlin-perso
+              (list (- (+ x 12.20 2.5) 14.20 0.5) (- (+ y ds) 1 1.25 2) 0)
+              (list (- (+ x 12.20 2.5) 0.5) (- (+ y ds) 1 1.25 2) 0)
+              (strcat ds_p "m")
+              layer
+      )
+
+      (draw-line (list (+ x 44.24) (- (+ y ds) 4.10) 0) (list (+ x 44.24 3.60) (- (+ y ds) 4.10) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 44.24 1.43) (- (+ y ds) 4.10) 0) (list (+ x 44.24 1.43 0.16) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 44.24 2.17) (- (+ y ds) 4.10) 0) (list (- (+ x 44.24 2.17) 0.16) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 44.24 1.59) (- (+ y ds 9.10) 4.10) 0) (list (+ x 44.24 1.59 0.42) (- (+ y ds 9.10) 4.10) 0) layer "Continuous" 1)
+
+      (draw-rect (list (+ x 37.85) (+ y ds 4.34) 0) (list (+ x 41.84) (+ y ds 0.30) 0) layer)
+      (draw-line (list (+ x 41.84) (+ y ds 0.30 1.01) 0) (list (+ x 41.84 3.93) (+ y ds 0.30 1.01) 0) layer "Continuous" 1)
+      (draw-line (list (+ x 41.84) (+ y ds 0.30 3.03) 0) (list (+ x 41.84 3.96) (+ y ds 0.30 3.03) 0) layer "Continuous" 1)
+
+      (draw-mtext (list (+ x 39.84) (+ y ds 2.32) 0) texte_pancarte layer 1 0 20)
     )
   )
 )
