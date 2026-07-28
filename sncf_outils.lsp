@@ -3164,6 +3164,19 @@
   )
 )
 
+(defun SC3D:DRAW-CLIP-CONTOUR (poly / n i p1 p2)
+  ;; Trace le contour jaune du polygone d'ajustement courant, non decoupe par
+  ;; lui-meme, pour visualiser la limite de la decoupe sur le bloc camera.
+  (setq n (length poly))
+  (setq i 0)
+  (while (< i n)
+    (setq p1 (SC3D:P (car (nth i poly)) (cadr (nth i poly)) 0.0))
+    (setq p2 (SC3D:P (car (nth (rem (+ i 1) n) poly)) (cadr (nth (rem (+ i 1) n) poly)) 0.0))
+    (SC3D:LINE-RAW p1 p2 "SC3D_AJUSTEMENT" 2)
+    (setq i (+ i 1))
+  )
+)
+
 (defun SC3D:ZONE-SOLID-RAW (p1 p2 p3 p4 lay aci rgb trans)
   (entmake
     (list
@@ -3785,6 +3798,10 @@
   (SC3D:DRAW-DIST-LABELS maxD)
   (SC3D:VERT-RECT maxD maxD tanH tilt camH objH objH "SC3D_RAYONS" 4)
 
+  (if *SC3D_CLIP_POLY*
+    (SC3D:DRAW-CLIP-CONTOUR *SC3D_CLIP_POLY*)
+  )
+
   (entmake '((0 . "ENDBLK")))
 )
 
@@ -4016,6 +4033,10 @@
   (SC3D:SIDE-CAMERA-SYMBOL camH tilt)
   (SC3D:SIDE-DRAW-FRUSTUM maxD camH objH tilt vHalf nearD)
   (SC3D:SIDE-DIST-LABELS maxD camH objH)
+
+  (if *SC3D_CLIP_POLY*
+    (SC3D:DRAW-CLIP-CONTOUR *SC3D_CLIP_POLY*)
+  )
 
   (entmake '((0 . "ENDBLK")))
 )
@@ -4932,6 +4953,7 @@
 (defun SC3D:APPLY-CLIP (e active localPts / ed blockName cfg vals calc view)
   ;; Regenere la geometrie du bloc camera (meme nom de bloc = redefinition en
   ;; place) avec ou sans decoupe par localPts, sans jamais appeler XCLIP.
+  (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
   (setq ed (entget e))
   (setq blockName (cdr (assoc 2 ed)))
   (setq cfg (SC3D:GET-XDATA e))
