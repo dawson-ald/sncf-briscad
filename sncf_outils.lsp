@@ -1995,6 +1995,12 @@
 (setq *SC3D_HACHURE_PATTERNS* '("ANSI31" "ANSI32" "ANSI33" "ANSI34" "ANSI35" "ANSI36" "ANSI37" "ANSI38" "ANGLE"))
 (setq *SC3D_RAND_SEED* nil)
 
+;; Polygone d'ajustement courant (liste de points 2D en coordonnees locales du bloc)
+;; et sa triangulation, utilises par les primitives de dessin pour decouper la
+;; geometrie elles-memes (voir section CLIPPING). nil = pas d'ajustement actif.
+(setq *SC3D_CLIP_POLY* nil)
+(setq *SC3D_CLIP_TRIS* nil)
+
 (defun SC3D:VIEW-LABEL->CODE (v)
   (if (= v "Vue de cote") "SIDE" "TOP")
 )
@@ -2804,6 +2810,319 @@
   (SC3D:LAYER "SC3D_PPM_12" 5)
 )
 
+;; ------------------------------------------------------------------------------------
+;; CLIPPING GEOMETRIQUE (remplace XCLIP)
+;;
+;; Plutot que de decouper l'affichage du bloc camera avec la commande XCLIP (qui
+;; simplifie/perd des sommets quand le polygone d'ajustement est complexe), on
+;; decoupe directement la geometrie generee : chaque primitive de dessin (ligne,
+;; solide, face) est testee contre le polygone d'ajustement *SC3D_CLIP_POLY*
+;; (coordonnees locales du bloc, X/Y uniquement) et seule la partie a l'interieur
+;; est envoyee a entmake. Aucun sommet du polygone n'est jamais simplifie.
+;; ------------------------------------------------------------------------------------
+
+(defun SC3D:CROSS2 (o a b)
+  (- (* (- (car a) (car o)) (- (cadr b) (cadr o)))
+     (* (- (cadr a) (cadr o)) (- (car b) (car o))))
+)
+
+(defun SC3D:LERP-PT (p1 p2 tt / x1 y1 z1 x2 y2 z2)
+  (setq x1 (car p1))
+  (setq y1 (cadr p1))
+  (setq z1 (if (caddr p1) (caddr p1) 0.0))
+  (setq x2 (car p2))
+  (setq y2 (cadr p2))
+  (setq z2 (if (caddr p2) (caddr p2) 0.0))
+  (list
+    (+ x1 (* tt (- x2 x1)))
+    (+ y1 (* tt (- y2 y1)))
+    (+ z1 (* tt (- z2 z1)))
+  )
+)
+
+(defun SC3D:PT-IN-POLY (pt poly / n i j x y xi yi xj yj inside)
+  (setq x (car pt))
+  (setq y (cadr pt))
+  (setq n (length poly))
+  (setq inside nil)
+  (setq i 0)
+  (setq j (- n 1))
+  (while (< i n)
+    (setq xi (car (nth i poly)))
+    (setq yi (cadr (nth i poly)))
+    (setq xj (car (nth j poly)))
+    (setq yj (cadr (nth j poly)))
+    (if (and
+          (not (eq (> yi y) (> yj y)))
+          (< x (+ xi (/ (* (- xj xi) (- y yi)) (- yj yi))))
+        )
+      (setq inside (not inside))
+    )
+    (setq j i)
+    (setq i (+ i 1))
+  )
+  inside
+)
+
+(defun SC3D:SEG-INTERSECT-T (p1 p2 q1 q2 / x1 y1 x2 y2 x3 y3 x4 y4 d tt ss)
+  ;; Parametre tt (0..1) le long de p1->p2 ou ce segment croise le segment q1->q2.
+  ;; nil si pas d'intersection dans les deux segments.
+  (setq x1 (car p1)) (setq y1 (cadr p1))
+  (setq x2 (car p2)) (setq y2 (cadr p2))
+  (setq x3 (car q1)) (setq y3 (cadr q1))
+  (setq x4 (car q2)) (setq y4 (cadr q2))
+  (setq d (- (* (- x2 x1) (- y4 y3)) (* (- y2 y1) (- x4 x3))))
+  (if (equal d 0.0 1e-12)
+    nil
+    (progn
+      (setq tt (/ (- (* (- x3 x1) (- y4 y3)) (* (- y3 y1) (- x4 x3))) d))
+      (setq ss (/ (- (* (- x3 x1) (- y2 y1)) (* (- y3 y1) (- x2 x1))) d))
+      (if (and (>= tt 0.0) (<= tt 1.0) (>= ss 0.0) (<= ss 1.0))
+        tt
+        nil
+      )
+    )
+  )
+)
+
+(defun SC3D:SORT-DEDUPE (lst / s out prev v)
+  (setq s (vl-sort lst '<))
+  (setq out '())
+  (setq prev nil)
+  (foreach v s
+    (if (or (null prev) (> (- v prev) 1e-9))
+      (setq out (append out (list v)))
+    )
+    (setq prev v)
+  )
+  out
+)
+
+(defun SC3D:LINE-CLIP-INTERVALS (p1 p2 poly / n i q1 q2 tt ts a b mid midpt result)
+  ;; Renvoie la liste des intervalles (a . b), 0<=a<b<=1, ou le segment p1->p2
+  ;; (teste en X/Y uniquement) est a l'interieur de poly. Gere les polygones concaves.
+  (setq n (length poly))
+  (setq ts (list 0.0 1.0))
+  (setq i 0)
+  (while (< i n)
+    (setq q1 (nth i poly))
+    (setq q2 (nth (rem (+ i 1) n) poly))
+    (setq tt (SC3D:SEG-INTERSECT-T p1 p2 q1 q2))
+    (if tt (setq ts (append ts (list tt))))
+    (setq i (+ i 1))
+  )
+  (setq ts (SC3D:SORT-DEDUPE ts))
+  (setq result '())
+  (setq i 0)
+  (while (< i (- (length ts) 1))
+    (setq a (nth i ts))
+    (setq b (nth (+ i 1) ts))
+    (if (> (- b a) 1e-9)
+      (progn
+        (setq mid (/ (+ a b) 2.0))
+        (setq midpt (SC3D:LERP-PT p1 p2 mid))
+        (if (SC3D:PT-IN-POLY midpt poly)
+          (setq result (append result (list (cons a b))))
+        )
+      )
+    )
+    (setq i (+ i 1))
+  )
+  result
+)
+
+(defun SC3D:CLIP-LINE-SEGMENTS (p1 p2 poly / intervals out iv)
+  (setq intervals (SC3D:LINE-CLIP-INTERVALS p1 p2 poly))
+  (setq out '())
+  (foreach iv intervals
+    (setq out
+      (append out
+        (list (list (SC3D:LERP-PT p1 p2 (car iv)) (SC3D:LERP-PT p1 p2 (cdr iv))))
+      )
+    )
+  )
+  out
+)
+
+(defun SC3D:POLY-SIGNED-AREA2 (pts / n i s p1 p2)
+  (setq n (length pts))
+  (setq s 0.0)
+  (setq i 0)
+  (while (< i n)
+    (setq p1 (nth i pts))
+    (setq p2 (nth (rem (+ i 1) n) pts))
+    (setq s (+ s (- (* (car p1) (cadr p2)) (* (car p2) (cadr p1)))))
+    (setq i (+ i 1))
+  )
+  s
+)
+
+(defun SC3D:PT-IN-TRI-P (pt a b c / d1 d2 d3 hasNeg hasPos)
+  (setq d1 (SC3D:CROSS2 a b pt))
+  (setq d2 (SC3D:CROSS2 b c pt))
+  (setq d3 (SC3D:CROSS2 c a pt))
+  (setq hasNeg (or (< d1 0.0) (< d2 0.0) (< d3 0.0)))
+  (setq hasPos (or (> d1 0.0) (> d2 0.0) (> d3 0.0)))
+  (not (and hasNeg hasPos))
+)
+
+(defun SC3D:EAR-CLIP-TRIANGULATE (poly / idxs n tris i k prevIdx curIdx nextIdx a b c isEar testIdx tp guard sz)
+  ;; Triangulation par decoupe d'oreilles (ear clipping) d'un polygone simple,
+  ;; convexe ou concave. Ne simplifie jamais les sommets : chaque sommet fourni
+  ;; se retrouve comme sommet d'un des triangles renvoyes.
+  (setq n (length poly))
+  (if (< n 3)
+    nil
+    (progn
+      (setq idxs '())
+      (setq i 0)
+      (while (< i n)
+        (setq idxs (append idxs (list i)))
+        (setq i (+ i 1))
+      )
+      (if (< (SC3D:POLY-SIGNED-AREA2 poly) 0.0)
+        (setq idxs (reverse idxs))
+      )
+      (setq tris '())
+      (setq guard 0)
+      (while (and (> (length idxs) 3) (< guard 20000))
+        (setq sz (length idxs))
+        (setq k 0)
+        (setq isEar nil)
+        (while (and (not isEar) (< k sz))
+          (setq prevIdx (nth (rem (+ k (- sz 1)) sz) idxs))
+          (setq curIdx  (nth k idxs))
+          (setq nextIdx (nth (rem (+ k 1) sz) idxs))
+          (setq a (nth prevIdx poly))
+          (setq b (nth curIdx poly))
+          (setq c (nth nextIdx poly))
+          (if (>= (SC3D:CROSS2 a b c) 0.0)
+            (progn
+              (setq isEar T)
+              (foreach testIdx idxs
+                (if (and isEar (/= testIdx prevIdx) (/= testIdx curIdx) (/= testIdx nextIdx))
+                  (if (SC3D:PT-IN-TRI-P (nth testIdx poly) a b c)
+                    (setq isEar nil)
+                  )
+                )
+              )
+            )
+          )
+          (if (not isEar) (setq k (+ k 1)))
+        )
+        (if isEar
+          (progn
+            (setq tris (append tris (list (list a b c))))
+            (setq idxs (vl-remove curIdx idxs))
+          )
+          (progn
+            ;; Polygone degenere (auto-intersectant) : on decoupe quand meme le
+            ;; premier sommet pour ne jamais boucler indefiniment.
+            (setq curIdx (car idxs))
+            (setq prevIdx (last idxs))
+            (setq nextIdx (cadr idxs))
+            (setq tris
+              (append tris
+                (list (list (nth prevIdx poly) (nth curIdx poly) (nth nextIdx poly)))
+              )
+            )
+            (setq idxs (vl-remove curIdx idxs))
+          )
+        )
+        (setq guard (+ guard 1))
+      )
+      (if (= (length idxs) 3)
+        (setq tris
+          (append tris
+            (list (list (nth (nth 0 idxs) poly) (nth (nth 1 idxs) poly) (nth (nth 2 idxs) poly)))
+          )
+        )
+      )
+      tris
+    )
+  )
+)
+
+(defun SC3D:INSIDE-EDGE (p a b)
+  (>= (SC3D:CROSS2 a b p) 0.0)
+)
+
+(defun SC3D:EDGE-INTERSECT (s e a b / x1 y1 x2 y2 x3 y3 x4 y4 d tt)
+  (setq x1 (car s)) (setq y1 (cadr s))
+  (setq x2 (car e)) (setq y2 (cadr e))
+  (setq x3 (car a))  (setq y3 (cadr a))
+  (setq x4 (car b))  (setq y4 (cadr b))
+  (setq d (- (* (- x2 x1) (- y4 y3)) (* (- y2 y1) (- x4 x3))))
+  (if (equal d 0.0 1e-12)
+    e
+    (progn
+      (setq tt (/ (- (* (- x3 x1) (- y4 y3)) (* (- y3 y1) (- x4 x3))) d))
+      (SC3D:LERP-PT s e tt)
+    )
+  )
+)
+
+(defun SC3D:SH-CLIP (subjPts clipPts / output input s e cp1 cp2)
+  ;; Sutherland-Hodgman : clipPts doit etre convexe (nos triangles d'oreilles le
+  ;; sont toujours), subjPts peut etre quelconque.
+  (setq output subjPts)
+  (setq cp1 (last clipPts))
+  (foreach cp2 clipPts
+    (setq input output)
+    (setq output '())
+    (if input
+      (progn
+        (setq s (last input))
+        (foreach e input
+          (if (SC3D:INSIDE-EDGE e cp1 cp2)
+            (progn
+              (if (not (SC3D:INSIDE-EDGE s cp1 cp2))
+                (setq output (append output (list (SC3D:EDGE-INTERSECT s e cp1 cp2))))
+              )
+              (setq output (append output (list e)))
+            )
+            (if (SC3D:INSIDE-EDGE s cp1 cp2)
+              (setq output (append output (list (SC3D:EDGE-INTERSECT s e cp1 cp2))))
+            )
+          )
+          (setq s e)
+        )
+      )
+    )
+    (setq cp1 cp2)
+  )
+  output
+)
+
+(defun SC3D:CLIP-FLAT-POLY (subjPts / frag out tri)
+  ;; Decoupe subjPts (polygone plan quelconque) par *SC3D_CLIP_TRIS* (triangulation
+  ;; mise en cache du polygone d'ajustement courant). Renvoie une liste de fragments
+  ;; convexes (chacun une liste de points).
+  (setq out '())
+  (foreach tri *SC3D_CLIP_TRIS*
+    (setq frag (SC3D:SH-CLIP subjPts tri))
+    (if (>= (length frag) 3)
+      (setq out (append out (list frag)))
+    )
+  )
+  out
+)
+
+(defun SC3D:FAN-TRIANGLES (poly / n i out)
+  (setq n (length poly))
+  (setq out '())
+  (if (>= n 3)
+    (progn
+      (setq i 1)
+      (while (< i (- n 1))
+        (setq out (append out (list (list (nth 0 poly) (nth i poly) (nth (+ i 1) poly)))))
+        (setq i (+ i 1))
+      )
+    )
+  )
+  out
+)
+
 (defun SC3D:P (x y z)
   (list x y z)
 )
@@ -2821,7 +3140,7 @@
   )
 )
 
-(defun SC3D:LINE (p1 p2 lay col)
+(defun SC3D:LINE-RAW (p1 p2 lay col)
   (entmake
     (list
       '(0 . "LINE")
@@ -2833,7 +3152,19 @@
   )
 )
 
-(defun SC3D:ZONE-SOLID (p1 p2 p3 p4 lay aci rgb trans)
+(defun SC3D:LINE (p1 p2 lay col / seg segs)
+  (if *SC3D_CLIP_POLY*
+    (progn
+      (setq segs (SC3D:CLIP-LINE-SEGMENTS p1 p2 *SC3D_CLIP_POLY*))
+      (foreach seg segs
+        (SC3D:LINE-RAW (nth 0 seg) (nth 1 seg) lay col)
+      )
+    )
+    (SC3D:LINE-RAW p1 p2 lay col)
+  )
+)
+
+(defun SC3D:ZONE-SOLID-RAW (p1 p2 p3 p4 lay aci rgb trans)
   (entmake
     (list
       '(0 . "SOLID")
@@ -2849,7 +3180,24 @@
   )
 )
 
-(defun SC3D:FACE (p1 p2 p3 p4 lay col)
+(defun SC3D:ZONE-SOLID (p1 p2 p3 p4 lay aci rgb trans / frags frag tri)
+  (if *SC3D_CLIP_POLY*
+    (progn
+      (setq frags (SC3D:CLIP-FLAT-POLY (list p1 p2 p3 p4)))
+      (foreach frag frags
+        (foreach tri (SC3D:FAN-TRIANGLES frag)
+          (SC3D:ZONE-SOLID-RAW
+            (nth 0 tri) (nth 1 tri) (nth 2 tri) (nth 2 tri)
+            lay aci rgb trans
+          )
+        )
+      )
+    )
+    (SC3D:ZONE-SOLID-RAW p1 p2 p3 p4 lay aci rgb trans)
+  )
+)
+
+(defun SC3D:FACE-RAW (p1 p2 p3 p4 lay col)
   (entmake
     (list
       '(0 . "3DFACE")
@@ -2865,19 +3213,22 @@
 )
 
 (defun SC3D:TEXT-LOCAL (pt h txt lay col rot)
-  (entmake
-    (list
-      '(0 . "TEXT")
-      (cons 8 lay)
-      (cons 62 col)
-      (cons 10 pt)
-      (cons 40 h)
-      (cons 1 txt)
-      (cons 50 rot)
-      '(7 . "STANDARD")
-      '(72 . 1)
-      '(73 . 2)
-      (cons 11 pt)
+  (if (and *SC3D_CLIP_POLY* (not (SC3D:PT-IN-POLY pt *SC3D_CLIP_POLY*)))
+    nil
+    (entmake
+      (list
+        '(0 . "TEXT")
+        (cons 8 lay)
+        (cons 62 col)
+        (cons 10 pt)
+        (cons 40 h)
+        (cons 1 txt)
+        (cons 50 rot)
+        '(7 . "STANDARD")
+        '(72 . 1)
+        '(73 . 2)
+        (cons 11 pt)
+      )
     )
   )
 )
@@ -2966,15 +3317,36 @@
   )
 )
 
-(defun SC3D:VERT-RECT (x maxD tanH tilt camH objH hObj lay col / w p1 p2 p3 p4)
+(defun SC3D:VERT-RECT (x maxD tanH tilt camH objH hObj lay col / w p1 p2 p3 p4 intervals iv b1 b2 q1 q2 q3 q4)
   (setq w (SC3D:CONE-HALF-WIDTH x maxD tanH tilt camH objH))
   (setq p1 (SC3D:P x (- w) 0.0))
   (setq p2 (SC3D:P x w 0.0))
   (setq p3 (SC3D:P x w hObj))
   (setq p4 (SC3D:P x (- w) hObj))
-  (SC3D:FACE p1 p2 p3 p4 lay col)
-  (SC3D:LINE p1 p2 lay col)
-  (SC3D:LINE p3 p4 lay col)
+  (if *SC3D_CLIP_POLY*
+    (progn
+      ;; Ce rectangle est un "mur" vertical a X constant : sa projection en X/Y est
+      ;; le segment p1-p2, donc on reutilise le clip de ligne pour trouver les
+      ;; intervalles Y visibles, puis on reconstruit un sous-mur par intervalle.
+      (setq intervals (SC3D:LINE-CLIP-INTERVALS p1 p2 *SC3D_CLIP_POLY*))
+      (foreach iv intervals
+        (setq b1 (SC3D:LERP-PT p1 p2 (car iv)))
+        (setq b2 (SC3D:LERP-PT p1 p2 (cdr iv)))
+        (setq q1 (SC3D:P x (cadr b1) 0.0))
+        (setq q2 (SC3D:P x (cadr b2) 0.0))
+        (setq q3 (SC3D:P x (cadr b2) hObj))
+        (setq q4 (SC3D:P x (cadr b1) hObj))
+        (SC3D:FACE-RAW q1 q2 q3 q4 lay col)
+        (SC3D:LINE-RAW q1 q2 lay col)
+        (SC3D:LINE-RAW q3 q4 lay col)
+      )
+    )
+    (progn
+      (SC3D:FACE-RAW p1 p2 p3 p4 lay col)
+      (SC3D:LINE-RAW p1 p2 lay col)
+      (SC3D:LINE-RAW p3 p4 lay col)
+    )
+  )
 )
 
 (defun SC3D:GRID (maxD tanH tilt camH objH / i yMax)
@@ -3286,34 +3658,8 @@
   )
 )
 
-(defun SC3D:DRAW-HATCH-FOV (maxD nearD tanH tilt camH objH patName aci / wMax w1 npts pts midX)
-  (setq wMax (SC3D:HALF-WIDTH-JVSG maxD tanH tilt camH objH))
-
-  (if (<= nearD 0.0)
-    (progn
-      (setq npts 3)
-      (setq pts
-        (list
-          (list 0.0 0.0)
-          (list maxD (- wMax))
-          (list maxD wMax)
-        )
-      )
-    )
-    (progn
-      (setq w1 (SC3D:CONE-HALF-WIDTH nearD maxD tanH tilt camH objH))
-      (setq npts 4)
-      (setq pts
-        (list
-          (list nearD (- w1))
-          (list nearD w1)
-          (list maxD wMax)
-          (list maxD (- wMax))
-        )
-      )
-    )
-  )
-
+(defun SC3D:EMIT-HATCH (pts patName aci / npts midX)
+  (setq npts (length pts))
   (setq midX (/ (apply '+ (mapcar 'car pts)) (float npts)))
 
   (entmake
@@ -3335,7 +3681,7 @@
         '(73 . 1)
         (cons 93 npts)
       )
-      (mapcar '(lambda (pt) (cons 10 pt)) pts)
+      (mapcar '(lambda (pt) (cons 10 (list (car pt) (cadr pt)))) pts)
       (list
         '(75 . 0)
         '(76 . 1)
@@ -3346,6 +3692,41 @@
         (cons 10 (list midX 0.0))
       )
     )
+  )
+)
+
+(defun SC3D:DRAW-HATCH-FOV (maxD nearD tanH tilt camH objH patName aci / wMax w1 pts frags frag)
+  (setq wMax (SC3D:HALF-WIDTH-JVSG maxD tanH tilt camH objH))
+
+  (if (<= nearD 0.0)
+    (setq pts
+      (list
+        (list 0.0 0.0)
+        (list maxD (- wMax))
+        (list maxD wMax)
+      )
+    )
+    (progn
+      (setq w1 (SC3D:CONE-HALF-WIDTH nearD maxD tanH tilt camH objH))
+      (setq pts
+        (list
+          (list nearD (- w1))
+          (list nearD w1)
+          (list maxD wMax)
+          (list maxD (- wMax))
+        )
+      )
+    )
+  )
+
+  (if *SC3D_CLIP_POLY*
+    (progn
+      (setq frags (SC3D:CLIP-FLAT-POLY pts))
+      (foreach frag frags
+        (SC3D:EMIT-HATCH frag patName aci)
+      )
+    )
+    (SC3D:EMIT-HATCH pts patName aci)
   )
 )
 
@@ -4331,89 +4712,6 @@
   )
 )
 
-(defun SC3D:XCLIP-CMD (args / oldcmd r)
-  (setq oldcmd (getvar "CMDECHO"))
-  (setvar "CMDECHO" 0)
-  (setq r (vl-catch-all-apply 'vl-cmdf args))
-  (setvar "CMDECHO" oldcmd)
-
-  (if (vl-catch-all-error-p r)
-    (progn
-      (princ
-        (strcat
-          "\nErreur XCLIP : "
-          (vl-catch-all-error-message r)
-        )
-      )
-      nil
-    )
-    T
-  )
-)
-
-(defun SC3D:XCLIP-DELETE (e)
-  (SC3D:XCLIP-CMD (list "_.XCLIP" e "" "_Delete"))
-)
-
-(defun SC3D:XCLIP-ON (e)
-  (SC3D:XCLIP-CMD (list "_.XCLIP" e "" "_ON"))
-)
-
-(defun SC3D:XCLIP-OFF (e)
-  (SC3D:XCLIP-CMD (list "_.XCLIP" e "" "_OFF"))
-)
-
-(defun SC3D:SAFE-SETVAR (var val / r)
-  (setq r (vl-catch-all-apply 'setvar (list var val)))
-  (not (vl-catch-all-error-p r))
-)
-
-(defun SC3D:XCLIPFRAME-SHOW ()
-  (if (not (SC3D:SAFE-SETVAR "XCLIPFRAME" 2))
-    (SC3D:SAFE-SETVAR "XCLIPFRAME" 1)
-  )
-)
-
-(defun SC3D:XCLIPFRAME-HIDE ()
-  ;; Masquer = on ne voit plus l'ajustement et le champ complet revient.
-  (SC3D:SAFE-SETVAR "XCLIPFRAME" 0)
-)
-
-(defun SC3D:XCLIP-RECTANGLE (e / p1 p2 ok)
-  (setq p1 (getpoint "\nPremier coin du rectangle d'ajustement : "))
-  (if p1
-    (progn
-      (setq p2 (getcorner p1 "\nCoin oppose : "))
-      (if p2
-        (progn
-          (SC3D:XCLIP-DELETE e)
-          (SC3D:XCLIPFRAME-SHOW)
-          (setq ok
-            (SC3D:XCLIP-CMD
-              (list
-                "_.XCLIP"
-                e
-                ""
-                "_New"
-                "_Rectangular"
-                p1
-                p2
-              )
-            )
-          )
-          (if ok
-            (progn
-              (SC3D:XCLIP-ON e)
-              (command "_.REGEN")
-              (princ "\nAjustement rectangle applique.")
-            )
-          )
-        )
-      )
-    )
-  )
-)
-
 (defun SC3D:TEMP-DELETE (ents)
   (foreach e ents
     (if (and e (entget e))
@@ -4447,7 +4745,6 @@
 
 (defun SC3D:GET-POLY-POINTS (/ pts p prev tempEnts closeEnt olderr result)
   (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
-  (SC3D:XCLIPFRAME-SHOW)
 
   (setq pts '())
   (setq tempEnts '())
@@ -4505,7 +4802,7 @@
   )
 
   ;; Les lignes jaunes ne servent que d'aide au trace.
-  ;; L'ajustement final est ensuite applique par XCLIP.
+  ;; L'ajustement final est ensuite applique par le decoupage geometrique custom.
   (if closeEnt
     (SC3D:TEMP-DELETE (list closeEnt))
   )
@@ -4515,45 +4812,174 @@
   result
 )
 
-(defun SC3D:XCLIP-POLYGONE (e / pts ok)
-  (setq pts (SC3D:GET-POLY-POINTS))
+;; ------------------------------------------------------------------------------------
+;; Stockage de l'ajustement (polygone en coordonnees locales du bloc) dans les
+;; xdata de l'INSERT, sous une appid dediee. Independant du xdata de configuration
+;; camera (SC3D_APP) pour ne jamais interferer avec SC3D:CFG-VALS.
+;; ------------------------------------------------------------------------------------
 
-  (if pts
-    (progn
-      (SC3D:XCLIP-DELETE e)
-      (SC3D:XCLIPFRAME-SHOW)
-      (setq ok
-        (SC3D:XCLIP-CMD
-          (append
-            (list
-              "_.XCLIP"
-              e
-              ""
-              "_New"
-              "_Polygonal"
+(setq *SC3D_CLIP_APP* "SC3D_CAMERA_CLIP")
+
+(defun SC3D:REGAPP-CLIP ()
+  (if (not (tblsearch "APPID" *SC3D_CLIP_APP*))
+    (regapp *SC3D_CLIP_APP*)
+  )
+)
+
+(defun SC3D:CLIP-PTS->STRING (pts / s pt)
+  (setq s "")
+  (foreach pt pts
+    (setq s (strcat s (rtos (car pt) 2 6) " " (rtos (cadr pt) 2 6) ";"))
+  )
+  s
+)
+
+(defun SC3D:CLIP-STRING->PTS (s / out tok xy)
+  (setq out '())
+  (foreach tok (SC3D:SPLIT s ";")
+    (if (/= tok "")
+      (progn
+        (setq xy (SC3D:SPLIT tok " "))
+        (if (>= (length xy) 2)
+          (setq out
+            (append out
+              (list (list (SC3D:ATOF (nth 0 xy) 0.0) (SC3D:ATOF (nth 1 xy) 0.0)))
             )
-            pts
-            (list "")
           )
-        )
-      )
-
-      (if ok
-        (progn
-          (SC3D:XCLIP-ON e)
-          (command "_.REGEN")
-          (princ "\nAjustement polygone applique.")
         )
       )
     )
   )
+  out
 )
 
-(defun SC3D:CMD-AJUSTER (/ e choix)
+(defun SC3D:STRING-CHUNKS (s size / out i n)
+  ;; Decoupe s en morceaux de taille size (independamment des mots), pour rester
+  ;; sous la limite de 255 caracteres d'une entree xdata 1000. Les morceaux sont
+  ;; reconcatenes dans l'ordre a la lecture, donc la coupure peut tomber n'importe ou.
+  (setq out '())
+  (setq n (strlen s))
+  (setq i 1)
+  (while (<= i n)
+    (setq out (append out (list (substr s i size))))
+    (setq i (+ i size))
+  )
+  out
+)
+
+(defun SC3D:SET-CLIP-XDATA (e active pts / s chunks lst c)
+  (SC3D:REGAPP-CLIP)
+  (setq s (SC3D:CLIP-PTS->STRING pts))
+  (setq chunks (SC3D:STRING-CHUNKS s 200))
+  (setq lst (list *SC3D_CLIP_APP* (cons 1070 (if active 1 0))))
+  (foreach c chunks
+    (setq lst (append lst (list (cons 1000 c))))
+  )
+  (entmod (append (entget e) (list (list -3 lst))))
+  (entupd e)
+)
+
+(defun SC3D:GET-CLIP-XDATA (e / xd entry active chunks x pts)
+  (setq xd (cdr (assoc -3 (entget e (list *SC3D_CLIP_APP*)))))
+  (if xd
+    (progn
+      (setq entry (assoc *SC3D_CLIP_APP* xd))
+      (if entry
+        (progn
+          (setq active nil)
+          (setq chunks "")
+          (foreach x (cdr entry)
+            (cond
+              ((= (car x) 1070) (setq active (= (cdr x) 1)))
+              ((= (car x) 1000) (setq chunks (strcat chunks (cdr x))))
+            )
+          )
+          (setq pts (SC3D:CLIP-STRING->PTS chunks))
+          (if (>= (length pts) 3)
+            (cons active pts)
+            nil
+          )
+        )
+        nil
+      )
+    )
+    nil
+  )
+)
+
+(defun SC3D:CLEAR-CLIP-XDATA (e)
+  (SC3D:REGAPP-CLIP)
+  (entmod (append (entget e) (list (list -3 (list *SC3D_CLIP_APP*)))))
+  (entupd e)
+)
+
+(defun SC3D:WORLD->LOCAL-PT (pt base rot / dx dy ca sa)
+  (setq dx (- (car pt) (car base)))
+  (setq dy (- (cadr pt) (cadr base)))
+  (setq ca (cos rot))
+  (setq sa (sin rot))
+  (list (+ (* dx ca) (* dy sa)) (+ (* (- dx) sa) (* dy ca)))
+)
+
+(defun SC3D:WORLD->LOCAL-POLY (pts base rot / out p)
+  (setq out '())
+  (foreach p pts
+    (setq out (append out (list (SC3D:WORLD->LOCAL-PT p base rot))))
+  )
+  out
+)
+
+(defun SC3D:APPLY-CLIP (e active localPts / ed blockName cfg vals calc view)
+  ;; Regenere la geometrie du bloc camera (meme nom de bloc = redefinition en
+  ;; place) avec ou sans decoupe par localPts, sans jamais appeler XCLIP.
+  (setq ed (entget e))
+  (setq blockName (cdr (assoc 2 ed)))
+  (setq cfg (SC3D:GET-XDATA e))
+  (setq vals (if cfg (SC3D:CFG-VALS cfg) nil))
+
+  (if (not vals)
+    (progn
+      (princ "\nImpossible de lire les informations de cette camera.")
+      nil
+    )
+    (progn
+      (setq calc (SC3D:CALC vals))
+      (setq view (cdr (assoc 'view vals)))
+
+      (setq *SC3D_CLIP_POLY* (if active localPts nil))
+      (setq *SC3D_CLIP_TRIS*
+        (if *SC3D_CLIP_POLY* (SC3D:EAR-CLIP-TRIANGULATE *SC3D_CLIP_POLY*) nil)
+      )
+
+      (if (= view "SIDE")
+        (SC3D:CREATE-BLOCK-GEOM-SIDE blockName vals calc)
+        (SC3D:CREATE-BLOCK-GEOM blockName vals calc)
+      )
+
+      (setq *SC3D_CLIP_POLY* nil)
+      (setq *SC3D_CLIP_TRIS* nil)
+
+      (if localPts
+        (SC3D:SET-CLIP-XDATA e active localPts)
+        (SC3D:CLEAR-CLIP-XDATA e)
+      )
+
+      (command "_.REGEN")
+      T
+    )
+  )
+)
+
+(defun SC3D:CMD-AJUSTER (/ e choix ed base rot p1 p2 wpts lpts stored)
   (setq e (SC3D:SELECT-CAMERA-BLOCK "\nSelectionner le bloc camera a ajuster : "))
 
   (if e
     (progn
+      (setq ed (entget e))
+      (setq base (cdr (assoc 10 ed)))
+      (setq rot (cdr (assoc 50 ed)))
+      (if (not rot) (setq rot 0.0))
+
       (initget "Rectangle Polygone Afficher Masquer Supprimer")
       (setq choix
         (getkword
@@ -4567,36 +4993,61 @@
 
       (cond
         ((= choix "Rectangle")
-          (SC3D:XCLIP-RECTANGLE e)
+          (setq p1 (getpoint "\nPremier coin du rectangle d'ajustement : "))
+          (if p1
+            (progn
+              (setq p2 (getcorner p1 "\nCoin oppose : "))
+              (if p2
+                (progn
+                  (setq wpts
+                    (list
+                      p1
+                      (list (car p2) (cadr p1))
+                      p2
+                      (list (car p1) (cadr p2))
+                    )
+                  )
+                  (setq lpts (SC3D:WORLD->LOCAL-POLY wpts base rot))
+                  (if (SC3D:APPLY-CLIP e T lpts)
+                    (princ "\nAjustement rectangle applique.")
+                  )
+                )
+              )
+            )
+          )
         )
         ((= choix "Polygone")
-          (SC3D:XCLIP-POLYGONE e)
+          (setq wpts (SC3D:GET-POLY-POINTS))
+          (if wpts
+            (progn
+              (setq lpts (SC3D:WORLD->LOCAL-POLY wpts base rot))
+              (if (SC3D:APPLY-CLIP e T lpts)
+                (princ "\nAjustement polygone applique.")
+              )
+            )
+          )
         )
         ((= choix "Afficher")
-          (SC3D:XCLIPFRAME-SHOW)
-          (if (SC3D:XCLIP-ON e)
-            (progn
-              (command "_.REGEN")
+          (setq stored (SC3D:GET-CLIP-XDATA e))
+          (if stored
+            (if (SC3D:APPLY-CLIP e T (cdr stored))
               (princ "\nAjustement affiche : le champ de vision est decoupe.")
             )
+            (princ "\nAucun ajustement defini pour cette camera.")
           )
         )
         ((= choix "Masquer")
-          (if (SC3D:XCLIP-OFF e)
-            (progn
-              (SC3D:XCLIPFRAME-HIDE)
-              (command "_.REGEN")
+          (setq stored (SC3D:GET-CLIP-XDATA e))
+          (if stored
+            (if (SC3D:APPLY-CLIP e nil (cdr stored))
               (princ "\nAjustement masque : le champ de vision complet est visible.")
             )
+            (princ "\nAucun ajustement defini pour cette camera.")
           )
         )
         ((= choix "Supprimer")
-          (if (SC3D:XCLIP-DELETE e)
-            (progn
-              (SC3D:XCLIPFRAME-HIDE)
-              (command "_.REGEN")
-              (princ "\nAjustement supprime.")
-            )
+          (if (SC3D:APPLY-CLIP e nil nil)
+            (princ "\nAjustement supprime.")
           )
         )
       )
@@ -7771,7 +8222,7 @@ Image source utilisee : " path))
             (setq texte_pancarte "-")
           )
 
-          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1) 0) texte_pancarte layer 1 0 20)
+          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1 1) 0) texte_pancarte layer 2 0 20)
 
           (draw-line (list (+ x 12.20 2) (- (+ y ds) 1) 0) (list (+ x 12.20 2) (- (+ y ds) 1 2.50) 0) layer "Continuous" 1)
 
@@ -7821,7 +8272,7 @@ Image source utilisee : " path))
             (setq texte_pancarte "-")
           )
 
-          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1) 0) texte_pancarte layer 1 0 20)
+          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1 1) 0) texte_pancarte layer 2 0 20)
 
           (draw-line (list (+ x 12.20 2) (- (+ y ds) 1) 0) (list (+ x 12.20 2) (- (+ y ds) 1 2.50) 0) layer "Continuous" 1)
 
@@ -7889,27 +8340,27 @@ Image source utilisee : " path))
           (draw-line (list (- (+ x 12.20 2 0.48) 0.48 4) (+ y ds 1 0.96) 0) (list (- (+ x 12.20 2 0.48) 0.48 4) (+ y ds 1 0.96 1.68) 0) layer "Continuous" 1)
           (draw-line (list (- (+ x 12.20 2 0.48) 0.48 4) (+ y ds 1 0.96 1.68) 0) (list (- (+ x 12.20 2 0.48) 0.48 4 4) (+ y ds 1 0.96 1.68) 0) layer "Continuous" 1)
 
-          (setq texte_pancarte_1
-          (getstring T "\nEntrer le texte de la premiere pancarte  (\\ pour sauter une ligne) : "))
-
-          (if (= texte_pancarte_1 "")
-            (setq texte_pancarte_1 "-")
-          )
-
           (setq texte_pancarte_2
-          (getstring T "\nEntrer le texte de la deuxieme pancarte  (\\ pour sauter une ligne) : "))
+          (getstring T "\nEntrer le texte de la premiere pancarte  (\\ pour sauter une ligne) : "))
 
           (if (= texte_pancarte_2 "")
             (setq texte_pancarte_2 "-")
           )
 
-          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1) 0) texte_pancarte_1 layer 1 0 20)
-          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4 4) (- (+ y ds 1 0.96 3.36 1 1) 1.68) 0) texte_pancarte_2 layer 1 0 20)
+          (setq texte_pancarte_1
+          (getstring T "\nEntrer le texte de la deuxieme pancarte  (\\ pour sauter une ligne) : "))
+
+          (if (= texte_pancarte_1 "")
+            (setq texte_pancarte_1 "-")
+          )
+
+          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1 1) 0) texte_pancarte_1 layer 2 0 20)
+          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4 4) (- (+ y ds 1 0.96 3.36 1 1 1) 1.68) 0) texte_pancarte_2 layer 2 0 20)
 
           (draw-line (list (- (+ x 12.20 2) 4) (- (+ y ds) 1) 0) (list (- (+ x 12.20 2) 4) (- (+ y ds) 1 2.50) 0) layer "Continuous" 1)
 
           (setq ds_p "")
-          (setq ds_p (getstring "\nLa distance par rapport aux bords du quai ? (ex: 1.5) <...> : "))
+          (setq ds_p (getstring "\nLa distance de la premiere pancarte par rapport aux bords du quai ? (ex: 1.5) <...> : "))
 
           (if (= ds_p "")
             (setq ds_p "...")
@@ -7958,27 +8409,27 @@ Image source utilisee : " path))
           (draw-line (list (- (+ x 12.20 2 0.48) 0.48 4) (+ y ds 1 0.96) 0) (list (- (+ x 12.20 2 0.48) 0.48 4) (+ y ds 1 0.96 1.68) 0) layer "Continuous" 1)
           (draw-line (list (- (+ x 12.20 2 0.48) 0.48 4) (+ y ds 1 0.96 1.68) 0) (list (- (+ x 12.20 2 0.48) 0.48 4 4) (+ y ds 1 0.96 1.68) 0) layer "Continuous" 1)
 
-          (setq texte_pancarte_1
-          (getstring T "\nEntrer le texte de la premiere pancarte  (\\ pour sauter une ligne) : "))
-
-          (if (= texte_pancarte_1 "")
-            (setq texte_pancarte_1 "-")
-          )
-
           (setq texte_pancarte_2
-          (getstring T "\nEntrer le texte de la deuxieme pancarte  (\\ pour sauter une ligne) : "))
+          (getstring T "\nEntrer le texte de la premiere pancarte  (\\ pour sauter une ligne) : "))
 
           (if (= texte_pancarte_2 "")
             (setq texte_pancarte_2 "-")
           )
 
-          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1) 0) texte_pancarte_1 layer 1 0 20)
-          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4 4) (- (+ y ds 1 0.96 3.36 1 1) 1.68) 0) texte_pancarte_2 layer 1 0 20)
+          (setq texte_pancarte_1
+          (getstring T "\nEntrer le texte de la deuxieme pancarte  (\\ pour sauter une ligne) : "))
+
+          (if (= texte_pancarte_1 "")
+            (setq texte_pancarte_1 "-")
+          )
+
+          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1 1) 0) texte_pancarte_1 layer 2 0 20)
+          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4 4) (- (+ y ds 1 0.96 3.36 1 1 1) 1.68) 0) texte_pancarte_2 layer 2 0 20)
 
           (draw-line (list (- (+ x 12.20 2) 4) (- (+ y ds) 1) 0) (list (- (+ x 12.20 2) 4) (- (+ y ds) 1 2.50) 0) layer "Continuous" 1)
 
           (setq ds_p "")
-          (setq ds_p (getstring "\nLa distance par rapport aux bords du quai ? (ex: 1.5) <...> : "))
+          (setq ds_p (getstring "\nLa distance de la premiere pancartepar rapport aux bords du quai ? (ex: 1.5) <...> : "))
 
           (if (= ds_p "")
             (setq ds_p "...")
@@ -8052,7 +8503,7 @@ Image source utilisee : " path))
             (setq texte_pancarte_2 "-")
           )
 
-          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1) 0) (strcat texte_pancarte_1 " // " texte_pancarte_2) layer 1 0 20)
+          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1 1) 0) (strcat texte_pancarte_1 " // " texte_pancarte_2) layer 2 0 20)
 
           (draw-line (list (+ x 12.20 2) (- (+ y ds) 1) 0) (list (+ x 12.20 2) (- (+ y ds) 1 2.50) 0) layer "Continuous" 1)
 
@@ -8115,7 +8566,7 @@ Image source utilisee : " path))
             (setq texte_pancarte_2 "-")
           )
 
-          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1) 0) (strcat texte_pancarte_1 " // " texte_pancarte_2) layer 1 0 20)
+          (draw-mtext (list (- (+ x 12.20 2 0.48 2) 0.48 4) (+ y ds 1 0.96 3.36 1 1 1) 0) (strcat texte_pancarte_1 " // " texte_pancarte_2) layer 2 0 20)
 
           (draw-line (list (+ x 12.20 2) (- (+ y ds) 1) 0) (list (+ x 12.20 2) (- (+ y ds) 1 2.50) 0) layer "Continuous" 1)
 
@@ -8155,6 +8606,25 @@ Image source utilisee : " path))
     )
     
   )
+)
+
+(defun draw-catenaire-h (pt t2 ds layer / x y c numero_cat)
+  (setq x (car pt))
+  (setq y (cadr pt))
+
+  (draw-line-ep (list (+ x 55.94) (+ y ds) 0) (list (+ x 55.94 4) (+ y ds) 0) layer "Continuous" 1 0.60)
+  (draw-line-ep (list (+ x 55.94) (- (+ y ds) 2) 0) (list (+ x 55.94) (+ y ds 2) 0) layer "Continuous" 1 0.60)
+  (draw-line-ep (list (+ x 55.94 4) (- (+ y ds) 2) 0) (list (+ x 55.94 4) (+ y ds 2) 0) layer "Continuous" 1 0.60)
+
+  (setq numero_cat
+  (getstring T "\nEntrer le numéro de la catenaire (ex. 88 / 09) : "))  
+  (if (= numero_cat "")
+    (setq numero_cat "? / ?")
+  )
+
+  (draw-mtext (list (+ x 55.94 2) (+ y ds 5.5) 0) "CAT" layer 3 0 13)
+  (draw-mtext (list (+ x 55.94 2) (- (+ y ds) 5.5) 0) numero_cat layer 3 0 13)
+  (draw-mtext (list (+ x 55.94 2 4 7) (+ y ds) 0) (strcat (rtos ds 2 2) " m") layer 3 0 13)
 )
 
 
@@ -8222,7 +8692,7 @@ Image source utilisee : " path))
           (progn
             (if (>= ds_eq 0)
               (progn
-                (draw-catenaire pt t2 ds_eq "0")
+                (draw-catenaire-h pt t2 ds_eq "0")
               )
               (progn
                 (princ "\nErreur : la distance doit etre superieure ou egale a 0.")
