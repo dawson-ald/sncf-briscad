@@ -4092,7 +4092,7 @@
   )
 )
 
-(defun SC3D:CREATE-CAMERA (base vals / calc blockName ins txt txtH cfg rot txtPt camLayer)
+(defun SC3D:CREATE-CAMERA (base vals / calc blockName ins cfg rot camLayer)
   (setq vals (SC3D:SETVAL vals 'view "TOP"))
   (SC3D:SETUP-LAYERS)
   (setq camLayer (SC3D:CAMERA-LAYER-NAME vals))
@@ -4127,24 +4127,11 @@
     )
   )
 
-  (setq txtPt (SC3D:PW 0.45 -0.75 0.45))
-
-  (setq txt
-    (SC3D:TEXT-WORLD
-      txtPt
-      0.30
-      (SC3D:SUMMARY-TEXT vals)
-      "SC3D_TEXTES"
-      7
-      0.0
-    )
-  )
-
-  (setq txtH (cdr (assoc 5 (entget txt))))
-  (setq cfg (SC3D:CFG-STR vals txtH))
+  ;; Le texte recapitulatif n'est plus cree automatiquement : voir SC3D:CMD-GENERER-TEXTE
+  ;; (menu Camera, option Texte), pour eviter d'ecraser/dupliquer un texte deja place.
+  (setq cfg (SC3D:CFG-STR vals ""))
 
   (SC3D:SET-XDATA ins cfg)
-  (SC3D:SET-XDATA txt cfg)
 
   (command "_.REGEN")
 
@@ -4154,7 +4141,7 @@
   ins
 )
 
-(defun SC3D:CREATE-CAMERA-SIDE (base vals / calc blockName ins txt txtH cfg rot txtPt camLayer)
+(defun SC3D:CREATE-CAMERA-SIDE (base vals / calc blockName ins cfg rot camLayer)
   (setq vals (SC3D:SETVAL vals 'view "SIDE"))
   (SC3D:SETUP-LAYERS)
   (setq camLayer (SC3D:CAMERA-LAYER-NAME vals))
@@ -4189,24 +4176,11 @@
     )
   )
 
-  (setq txtPt (SC3D:PW 0.45 (+ (cdr (assoc 'camh vals)) 0.85) 0.0))
-
-  (setq txt
-    (SC3D:TEXT-WORLD
-      txtPt
-      0.30
-      (SC3D:SUMMARY-TEXT-SIDE vals)
-      "SC3D_TEXTES"
-      7
-      0.0
-    )
-  )
-
-  (setq txtH (cdr (assoc 5 (entget txt))))
-  (setq cfg (SC3D:CFG-STR vals txtH))
+  ;; Le texte recapitulatif n'est plus cree automatiquement : voir SC3D:CMD-GENERER-TEXTE
+  ;; (menu Camera, option Texte), pour eviter d'ecraser/dupliquer un texte deja place.
+  (setq cfg (SC3D:CFG-STR vals ""))
 
   (SC3D:SET-XDATA ins cfg)
-  (SC3D:SET-XDATA txt cfg)
 
   (command "_.REGEN")
 
@@ -5088,11 +5062,72 @@
   (princ)
 )
 
+(defun SC3D:CMD-GENERER-TEXTE (/ e ed cfg vals base rot view txtPt txt txtH newCfg)
+  ;; Cree (ou recree) le texte recapitulatif d'une camera existante, a la demande
+  ;; (le texte n'est plus genere automatiquement par Creer/Modifier).
+  (setq e (SC3D:SELECT-CAMERA-BLOCK "\nSelectionner le bloc camera pour generer le texte : "))
+
+  (if e
+    (progn
+      (setq ed (entget e))
+      (setq cfg (SC3D:GET-XDATA e))
+      (setq vals (if cfg (SC3D:CFG-VALS cfg) nil))
+
+      (if vals
+        (progn
+          (setq base (cdr (assoc 10 ed)))
+          (setq rot (cdr (assoc 50 ed)))
+          (if (not rot) (setq rot 0.0))
+          (setq view (cdr (assoc 'view vals)))
+
+          ;; Supprime l'ancien texte lie (s'il existe) avant d'en creer un nouveau,
+          ;; pour ne jamais en laisser deux en meme temps.
+          (SC3D:DELETE-TEXT-HANDLE vals)
+
+          (setq *SC3D_BASE* (list (car base) (cadr base) (if (caddr base) (caddr base) 0.0)))
+          (setq *SC3D_CA* (cos rot))
+          (setq *SC3D_SA* (sin rot))
+
+          (setq txtPt
+            (if (= view "SIDE")
+              (SC3D:PW 0.45 (+ (cdr (assoc 'camh vals)) 0.85) 0.0)
+              (SC3D:PW 0.45 -0.75 0.45)
+            )
+          )
+
+          (setq txt
+            (SC3D:TEXT-WORLD
+              txtPt
+              0.30
+              (if (= view "SIDE") (SC3D:SUMMARY-TEXT-SIDE vals) (SC3D:SUMMARY-TEXT vals))
+              "SC3D_TEXTES"
+              7
+              0.0
+            )
+          )
+
+          (setq txtH (cdr (assoc 5 (entget txt))))
+          (setq newCfg (SC3D:CFG-STR vals txtH))
+
+          (SC3D:SET-XDATA e newCfg)
+          (SC3D:SET-XDATA txt newCfg)
+
+          (command "_.REGEN")
+          (princ "\nTexte genere.")
+        )
+        (princ "\nImpossible de lire les informations de cette camera.")
+      )
+    )
+  )
+
+  (princ)
+)
+
 (defun SC3D:MENU-CAMERA (/ choix)
-  (initget "C M L J A S")
+  (initget "C M L J A S T")
   (setq choix
     (getkword
-      "\nCamera - action [Creer/Modifier/caLculer/aJuster/Ajouter/Supprimer] <C> : "
+      "\nCamera - action [Creer/Modifier/caLculer/aJuster/Ajouter/Supprimer/Texte] <C> : "
     )
   )
   (if (null choix)
@@ -5122,6 +5157,9 @@
     )
     ((= choix "S")
       (SC3D:CMD-SUPPRIMER)
+    )
+    ((= choix "T")
+      (SC3D:CMD-GENERER-TEXTE)
     )
   )
 
