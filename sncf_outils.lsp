@@ -4362,7 +4362,7 @@
   (princ)
 )
 
-(defun SC3D:CMD-MODIFIER (/ sel e cfg oldVals newVals ed base oldRot newRot a)
+(defun SC3D:CMD-MODIFIER (/ sel e cfg oldVals newVals ed base oldRot newRot a clip newE)
   (setq sel (entsel "\nSelectionner le bloc camera a modifier : "))
 
   (if sel
@@ -4403,9 +4403,16 @@
                   )
 
                   (setq newVals (SC3D:SETVAL newVals 'rot newRot))
+                  ;; Recuperer l'ajustement (polygone de decoupe) existant avant de
+                  ;; detruire le bloc, pour le reappliquer sur le nouveau bloc cree :
+                  ;; sinon "Modifier" fait disparaitre l'ajustement en place.
+                  (setq clip (SC3D:GET-CLIP-XDATA e))
                   (SC3D:DELETE-TEXT-HANDLE oldVals)
                   (entdel e)
-                  (SC3D:CREATE-CAMERA-AUTO base newVals)
+                  (setq newE (SC3D:CREATE-CAMERA-AUTO base newVals))
+                  (if clip
+                    (SC3D:APPLY-CLIP newE (car clip) (cdr clip))
+                  )
                 )
               )
             )
