@@ -4381,7 +4381,9 @@
               (if newVals
                 (progn
                   (setq base (cdr (assoc 10 ed)))
-                  (setq oldRot (cdr (assoc 'rot oldVals)))
+                  ;; Rotation reelle actuelle du bloc (et non celle memorisee dans le xdata),
+                  ;; pour ne pas ecraser une rotation faite entre-temps avec l'outil ROTATE de BricsCAD.
+                  (setq oldRot (SC3D:RTD (cdr (assoc 50 ed))))
 
 ;; La rotation
 ;;                  (setq a
