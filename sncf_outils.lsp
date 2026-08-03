@@ -2312,7 +2312,7 @@
   (if b "1" "0")
 )
 
-(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view useHatch hatchPat hatchCol)
+(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view useHatch hatchPat hatchCol hidden)
   (setq manu     (cdr (assoc 'manu vals)))
   (setq model    (cdr (assoc 'model vals)))
   (setq fmt      (cdr (assoc 'fmt vals)))
@@ -2329,6 +2329,7 @@
   (setq useHatch (cdr (assoc 'use_hatch vals)))
   (setq hatchPat (cdr (assoc 'hatch_pattern vals)))
   (setq hatchCol (cdr (assoc 'hatch_color vals)))
+  (setq hidden   (cdr (assoc 'hidden vals)))
 
   (if (null view)     (setq view "TOP"))
   (if (null hatchPat) (setq hatchPat "ANSI31"))
@@ -2352,7 +2353,8 @@
     view "|"
     (SC3D:BOOLSTR useHatch) "|"
     hatchPat "|"
-    (itoa hatchCol)
+    (itoa hatchCol) "|"
+    (SC3D:BOOLSTR hidden)
   )
 )
 
@@ -2378,6 +2380,7 @@
       (cons 'use_hatch (if (> (length p) 15) (= (nth 15 p) "1") nil))
       (cons 'hatch_pattern (if (> (length p) 16) (nth 16 p) "ANSI31"))
       (cons 'hatch_color (if (> (length p) 17) (atoi (nth 17 p)) 1))
+      (cons 'hidden (if (> (length p) 18) (= (nth 18 p) "1") nil))
     )
     nil
   )
@@ -2814,13 +2817,6 @@
 
 ;; ------------------------------------------------------------------------------------
 ;; CLIPPING GEOMETRIQUE (remplace XCLIP)
-;;
-;; Plutot que de decouper l'affichage du bloc camera avec la commande XCLIP (qui
-;; simplifie/perd des sommets quand le polygone d'ajustement est complexe), on
-;; decoupe directement la geometrie generee : chaque primitive de dessin (ligne,
-;; solide, face) est testee contre le polygone d'ajustement *SC3D_CLIP_POLY*
-;; (coordonnees locales du bloc, X/Y uniquement) et seule la partie a l'interieur
-;; est envoyee a entmake. Aucun sommet du polygone n'est jamais simplifie.
 ;; ------------------------------------------------------------------------------------
 
 (defun SC3D:CROSS2 (o a b)
@@ -3745,7 +3741,7 @@
   )
 )
 
-(defun SC3D:CREATE-BLOCK-GEOM (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD useHatch hatchPat hatchCol)
+(defun SC3D:CREATE-BLOCK-GEOM (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD useHatch hatchPat hatchCol hidden)
   (setq maxD     (cdr (assoc 'dist vals)))
   (setq camH     (cdr (assoc 'camh vals)))
   (setq objH     (cdr (assoc 'objh vals)))
@@ -3760,6 +3756,7 @@
   (setq useHatch (cdr (assoc 'use_hatch vals)))
   (setq hatchPat (cdr (assoc 'hatch_pattern vals)))
   (setq hatchCol (cdr (assoc 'hatch_color vals)))
+  (setq hidden   (cdr (assoc 'hidden vals)))
 
   (if (null hatchPat) (setq hatchPat "ANSI31"))
   (if (null hatchCol) (setq hatchCol 1))
@@ -3769,39 +3766,59 @@
 
   (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
 
-  (if (> nearD 0.0)
-    (SC3D:GROUND-BAND
-      0.0
-      (SC3D:MIN nearD maxD)
-      maxD
-      tanH
-      tilt
-      camH
-      objH
-      "SC3D_NON_VISIBLE"
-      1
-      (SC3D:RGB 120 0 0)
-      trans
+  (if hidden
+    ;; Camera masquee : seule la zone non visible (angle mort pres de la camera) reste affichee.
+    (if (> nearD 0.0)
+      (SC3D:GROUND-BAND
+        0.0
+        (SC3D:MIN nearD maxD)
+        maxD
+        tanH
+        tilt
+        camH
+        objH
+        "SC3D_NON_VISIBLE"
+        1
+        (SC3D:RGB 120 0 0)
+        trans
+      )
     )
-  )
+    (progn
+      (if (> nearD 0.0)
+        (SC3D:GROUND-BAND
+          0.0
+          (SC3D:MIN nearD maxD)
+          maxD
+          tanH
+          tilt
+          camH
+          objH
+          "SC3D_NON_VISIBLE"
+          1
+          (SC3D:RGB 120 0 0)
+          trans
+        )
+      )
 
-  (SC3D:DRAW-PPM resW maxD nearD tanH tanV tilt camH objH standard trans)
+      (SC3D:DRAW-PPM resW maxD nearD tanH tanV tilt camH objH standard trans)
 
-  (if useHatch
-    (SC3D:DRAW-HATCH-FOV maxD nearD tanH tilt camH objH hatchPat hatchCol)
-  )
+      (if useHatch
+        (SC3D:DRAW-HATCH-FOV maxD nearD tanH tilt camH objH hatchPat hatchCol)
+      )
 
-  (if showGrid
-    (SC3D:GRID maxD tanH tilt camH objH)
-  )
+      (if showGrid
+        (SC3D:GRID maxD tanH tilt camH objH)
+      )
 
-  (SC3D:CAMERA-SYMBOL camH)
-  (SC3D:DRAW-FRUSTUM maxD camH objH tilt tanH tanV)
-  (SC3D:DRAW-DIST-LABELS maxD)
-  (SC3D:VERT-RECT maxD maxD tanH tilt camH objH objH "SC3D_RAYONS" 4)
+      (SC3D:CAMERA-SYMBOL camH)
+      (SC3D:DRAW-FRUSTUM maxD camH objH tilt tanH tanV)
+      (SC3D:DRAW-DIST-LABELS maxD)
+      (SC3D:VERT-RECT maxD maxD tanH tilt camH objH objH "SC3D_RAYONS" 4)
 
-  (if *SC3D_CLIP_POLY*
-    (SC3D:DRAW-CLIP-CONTOUR *SC3D_CLIP_POLY*)
+      (if *SC3D_CLIP_POLY*
+        (SC3D:DRAW-CLIP-CONTOUR *SC3D_CLIP_POLY*)
+      )
+    )
   )
 
   (entmake '((0 . "ENDBLK")))
@@ -3993,7 +4010,7 @@
   (SC3D:TEXT-LOCAL (SC3D:SIDE-P 0.65 (+ camH 0.45)) 0.25 (strcat (rtos angleDeg 2 1) "°") "SC3D_TEXTES" 2 0.0)
 )
 
-(defun SC3D:CREATE-BLOCK-GEOM-SIDE (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD vHalf)
+(defun SC3D:CREATE-BLOCK-GEOM-SIDE (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD vHalf hidden)
   (setq maxD     (cdr (assoc 'dist vals)))
   (setq camH     (cdr (assoc 'camh vals)))
   (setq objH     (cdr (assoc 'objh vals)))
@@ -4006,38 +4023,55 @@
   (setq tilt     (cdr (assoc 'tilt calc)))
   (setq nearD    (cdr (assoc 'nearD calc)))
   (setq vHalf    (/ (SC3D:DTR (cdr (assoc 'vAng calc))) 2.0))
+  (setq hidden   (cdr (assoc 'hidden vals)))
 
   (if (< trans 0.0) (setq trans 0.0))
   (if (> trans 90.0) (setq trans 90.0))
 
   (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
 
-  (if (> nearD 0.0)
-    (SC3D:SIDE-BAND
-      0.0
-      (SC3D:MIN nearD maxD)
-      objH
-      "SC3D_NON_VISIBLE"
-      1
-      (SC3D:RGB 120 0 0)
-      trans
+  (if hidden
+    ;; Camera masquee : seule la zone non visible (angle mort pres de la camera) reste affichee.
+    (if (> nearD 0.0)
+      (SC3D:SIDE-BAND
+        0.0
+        (SC3D:MIN nearD maxD)
+        objH
+        "SC3D_NON_VISIBLE"
+        1
+        (SC3D:RGB 120 0 0)
+        trans
+      )
     )
-  )
+    (progn
+      (if (> nearD 0.0)
+        (SC3D:SIDE-BAND
+          0.0
+          (SC3D:MIN nearD maxD)
+          objH
+          "SC3D_NON_VISIBLE"
+          1
+          (SC3D:RGB 120 0 0)
+          trans
+        )
+      )
 
-  (SC3D:SIDE-DRAW-PPM resW maxD nearD tanH tanV tilt camH objH standard trans)
+      (SC3D:SIDE-DRAW-PPM resW maxD nearD tanH tanV tilt camH objH standard trans)
 
-  (if showGrid
-    (SC3D:SIDE-GRID maxD camH objH tilt vHalf)
-  )
+      (if showGrid
+        (SC3D:SIDE-GRID maxD camH objH tilt vHalf)
+      )
 
-  (SC3D:SIDE-DRAW-AXES maxD camH objH tilt vHalf)
+      (SC3D:SIDE-DRAW-AXES maxD camH objH tilt vHalf)
 
-  (SC3D:SIDE-CAMERA-SYMBOL camH tilt)
-  (SC3D:SIDE-DRAW-FRUSTUM maxD camH objH tilt vHalf nearD)
-  (SC3D:SIDE-DIST-LABELS maxD camH objH)
+      (SC3D:SIDE-CAMERA-SYMBOL camH tilt)
+      (SC3D:SIDE-DRAW-FRUSTUM maxD camH objH tilt vHalf nearD)
+      (SC3D:SIDE-DIST-LABELS maxD camH objH)
 
-  (if *SC3D_CLIP_POLY*
-    (SC3D:DRAW-CLIP-CONTOUR *SC3D_CLIP_POLY*)
+      (if *SC3D_CLIP_POLY*
+        (SC3D:DRAW-CLIP-CONTOUR *SC3D_CLIP_POLY*)
+      )
+    )
   )
 
   (entmake '((0 . "ENDBLK")))
@@ -4379,6 +4413,9 @@
                   )
 
                   (setq newVals (SC3D:SETVAL newVals 'rot newRot))
+                  ;; Conserver l'etat masque/affiche existant : sinon "Modifier" ferait
+                  ;; reapparaitre une camera masquee via l'outil Visibilite.
+                  (setq newVals (SC3D:SETVAL newVals 'hidden (cdr (assoc 'hidden oldVals))))
                   ;; Recuperer l'ajustement (polygone de decoupe) existant avant de
                   ;; detruire le bloc, pour le reappliquer sur le nouveau bloc cree :
                   ;; sinon "Modifier" fait disparaitre l'ajustement en place.
@@ -4977,6 +5014,112 @@
   )
 )
 
+;; ------------------------------------------------------------------------------------
+;; VISIBILITE (Cacher / Afficher un ou plusieurs blocs camera)
+;;
+;; ------------------------------------------------------------------------------------
+
+(defun SC3D:REGEN-CAMERA-GEOM (e / ed blockName cfg vals calc view clip active pts)
+  ;; Regenere la geometrie du bloc camera en place a partir des xdata actuelles
+  ;; (configuration + ajustement existant), sans les modifier.
+  (setq ed (entget e))
+  (setq blockName (cdr (assoc 2 ed)))
+  (setq cfg (SC3D:GET-XDATA e))
+  (setq vals (if cfg (SC3D:CFG-VALS cfg) nil))
+
+  (if (not vals)
+    nil
+    (progn
+      (setq calc (SC3D:CALC vals))
+      (setq view (cdr (assoc 'view vals)))
+
+      (setq clip (SC3D:GET-CLIP-XDATA e))
+      (setq active (and clip (car clip)))
+      (setq pts (if clip (cdr clip) nil))
+
+      (setq *SC3D_CLIP_POLY* (if active pts nil))
+      (setq *SC3D_CLIP_TRIS*
+        (if *SC3D_CLIP_POLY* (SC3D:EAR-CLIP-TRIANGULATE *SC3D_CLIP_POLY*) nil)
+      )
+
+      (if (= view "SIDE")
+        (SC3D:CREATE-BLOCK-GEOM-SIDE blockName vals calc)
+        (SC3D:CREATE-BLOCK-GEOM blockName vals calc)
+      )
+
+      (setq *SC3D_CLIP_POLY* nil)
+      (setq *SC3D_CLIP_TRIS* nil)
+
+      T
+    )
+  )
+)
+
+(defun SC3D:SET-CAMERA-HIDDEN (e hidden / cfg vals texth newCfg)
+  (setq cfg (SC3D:GET-XDATA e))
+  (setq vals (if cfg (SC3D:CFG-VALS cfg) nil))
+
+  (if (not vals)
+    nil
+    (progn
+      (setq vals (SC3D:SETVAL vals 'hidden hidden))
+      (setq texth (cdr (assoc 'texth vals)))
+      (setq newCfg (SC3D:CFG-STR vals (if texth texth "")))
+      (SC3D:SET-XDATA e newCfg)
+      (SC3D:REGEN-CAMERA-GEOM e)
+    )
+  )
+)
+
+(defun SC3D:SELECT-CAMERA-BLOCKS (msg / ss n i e out)
+  (setq ss (ssget msg (list '(0 . "INSERT") (list -3 (list *SC3D_APP*)))))
+  (setq out '())
+  (if ss
+    (progn
+      (setq n (sslength ss))
+      (setq i 0)
+      (while (< i n)
+        (setq e (ssname ss i))
+        (if (SC3D:CAMERA-INSERT-P e)
+          (setq out (append out (list e)))
+        )
+        (setq i (+ i 1))
+      )
+    )
+  )
+  out
+)
+
+(defun SC3D:CMD-VISIBILITE (/ ents choix hidden n)
+  (setq ents (SC3D:SELECT-CAMERA-BLOCKS "\nSelectionner un ou plusieurs blocs camera : "))
+
+  (if (not ents)
+    (princ "\nAucun bloc camera selectionne.")
+    (progn
+      (initget "Cacher Afficher")
+      (setq choix (getkword "\nVisibilite [Cacher/Afficher] <Cacher> : "))
+      (if (null choix) (setq choix "Cacher"))
+      (setq hidden (= choix "Cacher"))
+
+      (setq n 0)
+      (foreach e ents
+        (if (SC3D:SET-CAMERA-HIDDEN e hidden)
+          (setq n (+ n 1))
+        )
+      )
+
+      (command "_.REGEN")
+
+      (if hidden
+        (princ (strcat "\n" (itoa n) " camera(s) masquee(s) : seule la zone non visible reste affichee."))
+        (princ (strcat "\n" (itoa n) " camera(s) affichee(s)."))
+      )
+    )
+  )
+
+  (princ)
+)
+
 (defun SC3D:CMD-AJUSTER (/ e choix ed base rot p1 p2 wpts lpts stored)
   (setq e (SC3D:SELECT-CAMERA-BLOCK "\nSelectionner le bloc camera a ajuster : "))
 
@@ -5126,10 +5269,10 @@
 )
 
 (defun SC3D:MENU-CAMERA (/ choix)
-  (initget "C M L J A S T")
+  (initget "C M L J A S T V")
   (setq choix
     (getkword
-      "\nCamera - action [Creer/Modifier/caLculer/aJuster/Ajouter/Supprimer/Texte] <C> : "
+      "\nCamera - action [Creer/Modifier/caLculer/aJuster/Ajouter/Supprimer/Texte/Visibilite] <C> : "
     )
   )
   (if (null choix)
@@ -5162,6 +5305,9 @@
     )
     ((= choix "T")
       (SC3D:CMD-GENERER-TEXTE)
+    )
+    ((= choix "V")
+      (SC3D:CMD-VISIBILITE)
     )
   )
 
