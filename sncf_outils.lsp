@@ -2042,6 +2042,19 @@
 (defun SC3D:MIN (a b) (if (< a b) a b))
 (defun SC3D:RGB (r g b) (+ (* r 65536) (* g 256) b))
 
+;; Toute la geometrie (bloc, INSERT, xdata de decoupe) est stockee en WCS/OCS
+;; brut via entmake. Les points et angles saisis interactivement (getpoint,
+;; getcorner, getangle) sont eux exprimes dans l'UCS courant : si l'UCS n'est
+;; pas le WCS (UCS "General"), il faut donc toujours les convertir avant de
+;; les combiner avec des donnees d'entite. cf. SC3D:UCS-PT->WCS / SC3D:UCS-ANG->WCS.
+(defun SC3D:UCS-PT->WCS (pt) (trans pt 1 0))
+
+(defun SC3D:UCS-ANG->WCS (a / p0 p1)
+  (setq p0 (trans '(0.0 0.0 0.0) 1 0))
+  (setq p1 (trans (list (cos a) (sin a) 0.0) 1 0))
+  (angle p0 p1)
+)
+
 (defun SC3D:TRANS-DXF (tr / opacity)
   (if (< tr 0.0) (setq tr 0.0))
   (if (> tr 90.0) (setq tr 90.0))
@@ -2312,7 +2325,7 @@
   (if b "1" "0")
 )
 
-(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view useHatch hatchPat hatchCol hidden)
+(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view useHatch hatchPat hatchCol hidden showDist)
   (setq manu     (cdr (assoc 'manu vals)))
   (setq model    (cdr (assoc 'model vals)))
   (setq fmt      (cdr (assoc 'fmt vals)))
@@ -2330,6 +2343,8 @@
   (setq hatchPat (cdr (assoc 'hatch_pattern vals)))
   (setq hatchCol (cdr (assoc 'hatch_color vals)))
   (setq hidden   (cdr (assoc 'hidden vals)))
+  ;; Absent (anciennes configs) = affiche par defaut.
+  (setq showDist (if (assoc 'show_dist vals) (cdr (assoc 'show_dist vals)) T))
 
   (if (null view)     (setq view "TOP"))
   (if (null hatchPat) (setq hatchPat "ANSI31"))
@@ -2354,7 +2369,8 @@
     (SC3D:BOOLSTR useHatch) "|"
     hatchPat "|"
     (itoa hatchCol) "|"
-    (SC3D:BOOLSTR hidden)
+    (SC3D:BOOLSTR hidden) "|"
+    (SC3D:BOOLSTR showDist)
   )
 )
 
@@ -2381,6 +2397,8 @@
       (cons 'hatch_pattern (if (> (length p) 16) (nth 16 p) "ANSI31"))
       (cons 'hatch_color (if (> (length p) 17) (atoi (nth 17 p)) 1))
       (cons 'hidden (if (> (length p) 18) (= (nth 18 p) "1") nil))
+      ;; Absent (anciennes configs generees avant cette option) = affiche par defaut.
+      (cons 'show_dist (if (> (length p) 19) (= (nth 19 p) "1") T))
     )
     nil
   )
@@ -2460,6 +2478,7 @@
   (write-line "      label = \"4. Affichage\";" f)
   (write-line "      : popup_list { key = \"view\"; label = \"Vue\"; width = 22; }" f)
   (write-line "      : toggle { key = \"grid\"; label = \"Afficher la grille\"; }" f)
+  (write-line "      : toggle { key = \"show_dist\"; label = \"Afficher les metres dans l'axe\"; }" f)
   (write-line "      : edit_box { key = \"trans\"; label = \"Transparence (0-90%)\"; edit_width = 10; }" f)
   (write-line "      : toggle { key = \"use_hatch\"; label = \"Hachure unique (vue du dessus, au lieu des zones PPM)\"; }" f)
   (write-line "      : row {" f)
@@ -2574,6 +2593,7 @@
     (cons 'std (nth (atoi (get_tile "std")) *SC3D_STD_LIST*))
     (cons 'view (SC3D:VIEW-LABEL->CODE (nth (atoi (get_tile "view")) *SC3D_VIEW_LIST*)))
     (cons 'grid (= (get_tile "grid") "1"))
+    (cons 'show_dist (= (get_tile "show_dist") "1"))
     (cons 'trans (SC3D:ATOF (get_tile "trans") 60.0))
     (cons 'use_hatch (= (get_tile "use_hatch") "1"))
     (cons 'hatch_pattern (if *SC3D_CUR_HATCH_PAT* *SC3D_CUR_HATCH_PAT* "ANSI31"))
@@ -2674,6 +2694,8 @@
           (set_tile "camh" (rtos (cdr (assoc 'camh def)) 2 2))
           (set_tile "objh" (rtos (cdr (assoc 'objh def)) 2 2))
           (set_tile "grid" (if (cdr (assoc 'grid def)) "1" "0"))
+          ;; Absent (anciennes configs) = affiche par defaut.
+          (set_tile "show_dist" (if (or (not (assoc 'show_dist def)) (cdr (assoc 'show_dist def))) "1" "0"))
           (set_tile "trans" (rtos (cdr (assoc 'trans def)) 2 0))
 
           (setq *SC3D_CUR_HATCH_PAT* (cdr (assoc 'hatch_pattern def)))
@@ -2695,6 +2717,7 @@
           (set_tile "camh" "4")
           (set_tile "objh" "2.5")
           (set_tile "grid" "0")
+          (set_tile "show_dist" "1")
           (set_tile "trans" "60")
           (set_tile "use_hatch" "0")
           (SC3D:RAND-HATCH)
@@ -3741,7 +3764,7 @@
   )
 )
 
-(defun SC3D:CREATE-BLOCK-GEOM (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD useHatch hatchPat hatchCol hidden)
+(defun SC3D:CREATE-BLOCK-GEOM (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD useHatch hatchPat hatchCol hidden showDist)
   (setq maxD     (cdr (assoc 'dist vals)))
   (setq camH     (cdr (assoc 'camh vals)))
   (setq objH     (cdr (assoc 'objh vals)))
@@ -3757,6 +3780,8 @@
   (setq hatchPat (cdr (assoc 'hatch_pattern vals)))
   (setq hatchCol (cdr (assoc 'hatch_color vals)))
   (setq hidden   (cdr (assoc 'hidden vals)))
+  ;; Absent (anciennes configs) = affiche par defaut.
+  (setq showDist (if (assoc 'show_dist vals) (cdr (assoc 'show_dist vals)) T))
 
   (if (null hatchPat) (setq hatchPat "ANSI31"))
   (if (null hatchCol) (setq hatchCol 1))
@@ -3812,7 +3837,9 @@
 
       (SC3D:CAMERA-SYMBOL camH)
       (SC3D:DRAW-FRUSTUM maxD camH objH tilt tanH tanV)
-      (SC3D:DRAW-DIST-LABELS maxD)
+      (if showDist
+        (SC3D:DRAW-DIST-LABELS maxD)
+      )
       (SC3D:VERT-RECT maxD maxD tanH tilt camH objH objH "SC3D_RAYONS" 4)
 
       (if *SC3D_CLIP_POLY*
@@ -4010,7 +4037,7 @@
   (SC3D:TEXT-LOCAL (SC3D:SIDE-P 0.65 (+ camH 0.45)) 0.25 (strcat (rtos angleDeg 2 1) "°") "SC3D_TEXTES" 2 0.0)
 )
 
-(defun SC3D:CREATE-BLOCK-GEOM-SIDE (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD vHalf hidden)
+(defun SC3D:CREATE-BLOCK-GEOM-SIDE (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD vHalf hidden showDist)
   (setq maxD     (cdr (assoc 'dist vals)))
   (setq camH     (cdr (assoc 'camh vals)))
   (setq objH     (cdr (assoc 'objh vals)))
@@ -4024,6 +4051,8 @@
   (setq nearD    (cdr (assoc 'nearD calc)))
   (setq vHalf    (/ (SC3D:DTR (cdr (assoc 'vAng calc))) 2.0))
   (setq hidden   (cdr (assoc 'hidden vals)))
+  ;; Absent (anciennes configs) = affiche par defaut.
+  (setq showDist (if (assoc 'show_dist vals) (cdr (assoc 'show_dist vals)) T))
 
   (if (< trans 0.0) (setq trans 0.0))
   (if (> trans 90.0) (setq trans 90.0))
@@ -4066,7 +4095,9 @@
 
       (SC3D:SIDE-CAMERA-SYMBOL camH tilt)
       (SC3D:SIDE-DRAW-FRUSTUM maxD camH objH tilt vHalf nearD)
-      (SC3D:SIDE-DIST-LABELS maxD camH objH)
+      (if showDist
+        (SC3D:SIDE-DIST-LABELS maxD camH objH)
+      )
 
       (if *SC3D_CLIP_POLY*
         (SC3D:DRAW-CLIP-CONTOUR *SC3D_CLIP_POLY*)
@@ -4345,11 +4376,14 @@
 )
 
 (defun SC3D:ASK-ROTATION (/ a)
-  (setq a (getangle "\nRotation de la camera <0> : "))
-  (if a
-    (SC3D:RTD a)
-    0.0
-  )
+  ;; getorient (contrairement a getangle) ignore ANGBASE/ANGDIR : la valeur
+  ;; recue est toujours dans la convention mathematique standard (0 = axe X
+  ;; de l'UCS courant, sens antihoraire), celle utilisee partout ailleurs dans
+  ;; ce fichier (SC3D:DTR/RTD, geometrie locale du bloc). Elle reste relative
+  ;; a l'UCS courant : on la convertit ensuite en WCS car c'est ce que
+  ;; SC3D:CREATE-CAMERA(-SIDE) stocke tel quel dans le DXF 50.
+  (setq a (getorient "\nRotation de la camera <0> : "))
+  (SC3D:RTD (SC3D:UCS-ANG->WCS (if a a 0.0)))
 )
 
 (defun SC3D:CMD-CREER (/ vals base rot)
@@ -4361,7 +4395,8 @@
       (setq vals (SC3D:SETVAL vals 'rot rot))
 
       (setq base (getpoint "\nPoint d'insertion de la camera : "))
-      (if (not base)
+      (if base
+        (setq base (SC3D:UCS-PT->WCS base))
         (setq base '(0.0 0.0 0.0))
       )
 
@@ -4786,13 +4821,19 @@
   e
 )
 
-(defun SC3D:GET-POLY-POINTS (/ pts p prev tempEnts closeEnt olderr result)
+(defun SC3D:UNDO-LAST-PT (lst)
+  ;; Retire le dernier element d'une liste (pas de butlast en AutoLISP).
+  (reverse (cdr (reverse lst)))
+)
+
+(defun SC3D:GET-POLY-POINTS (/ pts pt tempEnts closeEnt olderr result finished)
   (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
 
   (setq pts '())
   (setq tempEnts '())
   (setq closeEnt nil)
   (setq result nil)
+  (setq finished nil)
   (setq olderr *error*)
 
   (defun *error* (msg)
@@ -4807,37 +4848,85 @@
     (princ)
   )
 
-  (setq p (getpoint "\nPremier point du polygone d'ajustement : "))
-
-  (while p
-    (setq pts (append pts (list p)))
-
-    ;; Affiche les segments deja valides, sinon le polygone est invisible pendant le trace.
-    (if prev
-      (setq tempEnts (append tempEnts (list (SC3D:TEMP-LINE prev p))))
-    )
-
-    ;; Affiche aussi la fermeture provisoire du polygone.
-    (if closeEnt
+  (while (not finished)
+    (if (= (length pts) 0)
+      ;; Premier point : rien a annuler pour l'instant.
       (progn
-        (SC3D:TEMP-DELETE (list closeEnt))
-        (setq closeEnt nil)
+        (setq pt (getpoint "\nPremier point du polygone d'ajustement : "))
+        (if pt
+          (setq pts (list pt))
+          (setq finished T)
+        )
       )
-    )
-    (if (>= (length pts) 3)
-      (setq closeEnt (SC3D:TEMP-LINE p (car pts)))
-    )
+      (progn
+        ;; Points suivants : "Annuler" permet de revenir sur le dernier point
+        ;; saisi sans devoir recommencer tout le polygone.
+        (initget "Annuler")
+        (setq pt
+          (getpoint
+            (last pts)
+            (if (< (length pts) 3)
+              "\nPoint suivant ou [Annuler] : "
+              "\nPoint suivant ou Entree pour terminer [Annuler] : "
+            )
+          )
+        )
+        (cond
+          ((null pt)
+            (setq finished T)
+          )
+          ((= pt "Annuler")
+            (setq pts (SC3D:UNDO-LAST-PT pts))
+            (if tempEnts
+              (progn
+                (SC3D:TEMP-DELETE (list (last tempEnts)))
+                (setq tempEnts (SC3D:UNDO-LAST-PT tempEnts))
+              )
+            )
+            (if closeEnt
+              (progn
+                (SC3D:TEMP-DELETE (list closeEnt))
+                (setq closeEnt nil)
+              )
+            )
+            (if (>= (length pts) 3)
+              (setq closeEnt
+                (SC3D:TEMP-LINE (SC3D:UCS-PT->WCS (last pts)) (SC3D:UCS-PT->WCS (car pts)))
+              )
+            )
+            (princ "\nDernier point annule.")
+          )
+          (T
+            ;; Affiche le segment nouvellement valide. entmake (dans SC3D:TEMP-LINE)
+            ;; attend des points WCS, alors que pts est encore exprime dans l'UCS
+            ;; courant (necessaire pour chainer les getpoint).
+            (setq tempEnts
+              (append tempEnts
+                (list (SC3D:TEMP-LINE (SC3D:UCS-PT->WCS (last pts)) (SC3D:UCS-PT->WCS pt)))
+              )
+            )
+            (setq pts (append pts (list pt)))
 
-    (setq prev p)
-
-    (if (< (length pts) 3)
-      (setq p (getpoint p "\nPoint suivant : "))
-      (setq p (getpoint p "\nPoint suivant ou Entree pour terminer : "))
+            ;; Affiche aussi la fermeture provisoire du polygone.
+            (if closeEnt
+              (progn
+                (SC3D:TEMP-DELETE (list closeEnt))
+                (setq closeEnt nil)
+              )
+            )
+            (if (>= (length pts) 3)
+              (setq closeEnt (SC3D:TEMP-LINE (SC3D:UCS-PT->WCS pt) (SC3D:UCS-PT->WCS (car pts))))
+            )
+          )
+        )
+      )
     )
   )
 
   (if (>= (length pts) 3)
-    (setq result pts)
+    ;; Le resultat est converti en WCS : il sera combine avec le point d'insertion
+    ;; et la rotation du bloc (donnees d'entite, donc WCS) par SC3D:WORLD->LOCAL-POLY.
+    (setq result (mapcar 'SC3D:UCS-PT->WCS pts))
     (progn
       (princ "\nIl faut au moins 3 points pour un polygone.")
       (setq result nil)
@@ -5149,12 +5238,17 @@
               (setq p2 (getcorner p1 "\nCoin oppose : "))
               (if p2
                 (progn
+                  ;; Rectangle aligne sur l'UCS courant (p1/p2) : on construit ses coins
+                  ;; dans l'UCS puis on les convertit en WCS pour les combiner avec
+                  ;; base/rot (donnees d'entite, donc WCS).
                   (setq wpts
-                    (list
-                      p1
-                      (list (car p2) (cadr p1))
-                      p2
-                      (list (car p1) (cadr p2))
+                    (mapcar 'SC3D:UCS-PT->WCS
+                      (list
+                        p1
+                        (list (car p2) (cadr p1))
+                        p2
+                        (list (car p1) (cadr p2))
+                      )
                     )
                   )
                   (setq lpts (SC3D:WORLD->LOCAL-POLY wpts base rot))
