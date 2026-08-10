@@ -1994,6 +1994,7 @@
 
 (setq *SC3D_STD_LIST* '("2014" "2025"))
 (setq *SC3D_VIEW_LIST* '("Vue du dessus" "Vue de cote"))
+(setq *SC3D_SIT_LIST* '("Aucune" "Existante" "Projetee"))
 (setq *SC3D_HACHURE_PATTERNS* '("ANSI31" "ANSI32" "ANSI33" "ANSI34" "ANSI35" "ANSI36" "ANSI37" "ANSI38" "ANGLE"))
 (setq *SC3D_RAND_SEED* nil)
 
@@ -2009,6 +2010,34 @@
 
 (defun SC3D:VIEW-CODE->LABEL (v)
   (if (= v "SIDE") "Vue de cote" "Vue du dessus")
+)
+
+;; ------------------------------------------------------------------------------------
+;; NOM DU CHAMP DE VISION / SITUATION (Existante ou Projetee)
+;; Les deux sont optionnels. La situation ne peut valoir qu'une seule des deux valeurs.
+;; ------------------------------------------------------------------------------------
+
+(defun SC3D:SIT-LABEL->CODE (s)
+  (cond
+    ((= s "Existante") "EXIST")
+    ((= s "Projetee") "PROJ")
+    (T "")
+  )
+)
+
+(defun SC3D:SIT-CODE->LABEL (s)
+  (cond
+    ((= s "EXIST") "Existante")
+    ((= s "PROJ") "Projetee")
+    (T "Aucune")
+  )
+)
+
+(defun SC3D:CLEAN-NAME (s)
+  ;; Le nom est stocke dans la chaine de configuration separee par "|" :
+  ;; on interdit donc ce caractere dans le nom.
+  (if (null s) (setq s ""))
+  (SC3D:REPL s "|" "/")
 )
 
 (defun SC3D:INIT-RAND ()
@@ -2325,7 +2354,7 @@
   (if b "1" "0")
 )
 
-(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view useHatch hatchPat hatchCol hidden showDist)
+(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view useHatch hatchPat hatchCol hidden showDist cvname sit)
   (setq manu     (cdr (assoc 'manu vals)))
   (setq model    (cdr (assoc 'model vals)))
   (setq fmt      (cdr (assoc 'fmt vals)))
@@ -2345,10 +2374,14 @@
   (setq hidden   (cdr (assoc 'hidden vals)))
   ;; Absent (anciennes configs) = affiche par defaut.
   (setq showDist (if (assoc 'show_dist vals) (cdr (assoc 'show_dist vals)) T))
+  (setq cvname   (cdr (assoc 'cvname vals)))
+  (setq sit      (cdr (assoc 'situation vals)))
 
   (if (null view)     (setq view "TOP"))
   (if (null hatchPat) (setq hatchPat "ANSI31"))
   (if (null hatchCol) (setq hatchCol 1))
+  (if (null cvname)   (setq cvname ""))
+  (if (null sit)      (setq sit ""))
 
   (strcat
     manu "|"
@@ -2370,7 +2403,9 @@
     hatchPat "|"
     (itoa hatchCol) "|"
     (SC3D:BOOLSTR hidden) "|"
-    (SC3D:BOOLSTR showDist)
+    (SC3D:BOOLSTR showDist) "|"
+    (SC3D:CLEAN-NAME cvname) "|"
+    sit
   )
 )
 
@@ -2399,6 +2434,9 @@
       (cons 'hidden (if (> (length p) 18) (= (nth 18 p) "1") nil))
       ;; Absent (anciennes configs generees avant cette option) = affiche par defaut.
       (cons 'show_dist (if (> (length p) 19) (= (nth 19 p) "1") T))
+      ;; Nom du champ de vision et situation (anciennes configs = vide).
+      (cons 'cvname (if (> (length p) 20) (nth 20 p) ""))
+      (cons 'situation (if (> (length p) 21) (nth 21 p) ""))
     )
     nil
   )
@@ -2456,6 +2494,8 @@
   (write-line "      label = \"1. Camera\";" f)
   (write-line "      : popup_list { key = \"manu\"; label = \"Fabricant\"; width = 38; }" f)
   (write-line "      : popup_list { key = \"model\"; label = \"Modele\"; width = 38; }" f)
+  (write-line "      : edit_box { key = \"camname\"; label = \"Nom du champ (optionnel)\"; edit_width = 24; }" f)
+  (write-line "      : popup_list { key = \"situation\"; label = \"Situation\"; width = 22; }" f)
   (write-line "    }" f)
 
   (write-line "    : boxed_column {" f)
@@ -2598,6 +2638,8 @@
     (cons 'use_hatch (= (get_tile "use_hatch") "1"))
     (cons 'hatch_pattern (if *SC3D_CUR_HATCH_PAT* *SC3D_CUR_HATCH_PAT* "ANSI31"))
     (cons 'hatch_color (if *SC3D_CUR_HATCH_COL* *SC3D_CUR_HATCH_COL* 1))
+    (cons 'cvname (SC3D:CLEAN-NAME (get_tile "camname")))
+    (cons 'situation (SC3D:SIT-LABEL->CODE (nth (atoi (get_tile "situation")) *SC3D_SIT_LIST*)))
   )
 )
 
@@ -2669,6 +2711,10 @@
       (mapcar 'add_list *SC3D_VIEW_LIST*)
       (end_list)
 
+      (start_list "situation")
+      (mapcar 'add_list *SC3D_SIT_LIST*)
+      (end_list)
+
       (if def
         (progn
           (setq manu (cdr (assoc 'manu def)))
@@ -2688,6 +2734,11 @@
           (set_tile "res" (itoa (SC3D:INDEXOF res *SC3D_RES_LIST*)))
           (set_tile "std" (itoa (SC3D:INDEXOF std *SC3D_STD_LIST*)))
           (set_tile "view" (itoa (SC3D:INDEXOF (SC3D:VIEW-CODE->LABEL (cdr (assoc 'view def))) *SC3D_VIEW_LIST*)))
+
+          (set_tile "camname" (if (cdr (assoc 'cvname def)) (cdr (assoc 'cvname def)) ""))
+          (set_tile "situation"
+            (itoa (SC3D:INDEXOF (SC3D:SIT-CODE->LABEL (cdr (assoc 'situation def))) *SC3D_SIT_LIST*))
+          )
 
           (set_tile "focal" (rtos (cdr (assoc 'focal def)) 2 2))
           (set_tile "dist" (rtos (cdr (assoc 'dist def)) 2 2))
@@ -2712,6 +2763,8 @@
           (set_tile "res" (itoa (SC3D:INDEXOF "1920x1080 (2MP 16:9)" *SC3D_RES_LIST*)))
           (set_tile "std" "0")
           (set_tile "view" "0")
+          (set_tile "camname" "")
+          (set_tile "situation" "0")
           (set_tile "focal" "5")
           (set_tile "dist" "15")
           (set_tile "camh" "4")
@@ -5367,11 +5420,529 @@
   (princ)
 )
 
+;; ------------------------------------------------------------------------------------
+;; EXPORT EN PRESENTATIONS
+;;
+;; Pour chaque camera selectionnee, une presentation (layout) est creee, avec un
+;; dezoom qui cadre l'integralite de son champ de vision. Dans chaque fenetre,
+;; toutes les autres cameras du dessin sont "cachees" par gel de calque propre a
+;; la fenetre (VP freeze) : le modele n'est jamais modifie, chaque presentation
+;; montre donc uniquement sa camera.
+;;
+;; Format papier : 3 x A4 portrait cote a cote (630 x 297 mm).
+;;   - 1er A4 : fenetre sur la zone de legende choisie dans le dessin (optionnel)
+;;   - 2e  A4 : situation existante (ou camera seule)
+;;   - 3e  A4 : situation projetee (uniquement pour les paires existante/projetee),
+;;              cadree sur son propre champ de vision, a l'endroit ou il se trouve
+;;              dans le dessin, avec la camera existante cachee.
+;;
+;; Nom de la presentation : nom du champ de vision, sinon CV_1, CV_2, ...
+;; Si deux champs de vision selectionnes portent le meme nom et que l'un est
+;; "Existante" et l'autre "Projetee", une seule presentation combinee est creee.
+;;
+;; La fenetre creee par defaut avec toute nouvelle presentation est supprimee.
+;;
+;; NOTE : pour permettre le gel individuel, chaque bloc camera est deplace sur son
+;; propre calque SC3D_CV_<handle> (couleur 2) au moment de l'export. Le gel est
+;; applique avec VPLAYER (gel SC3D_CV_* puis degel du seul calque a presenter).
+;; ------------------------------------------------------------------------------------
+
+(setq *SC3D_A4_W* 210.0)
+(setq *SC3D_A4_H* 297.0)
+(setq *SC3D_VP_MARGIN* 10.0)
+(setq *SC3D_PAGE_MARGIN* 13.0)
+(setq *SC3D_EXPORT_ZOOM* 10.0)
+(setq *SC3D_CV_COUNTER* 0)
+
+(defun SC3D:ACAD-DOC ()
+  (vla-get-ActiveDocument (vlax-get-acad-object))
+)
+
+(defun SC3D:SSGET-CAMERAS (mode / ss out n i e)
+  ;; mode = nil : selection interactive ; mode = "_X" : toutes les cameras du dessin.
+  (setq ss
+    (if mode
+      (ssget mode (list '(0 . "INSERT") (list -3 (list *SC3D_APP*))))
+      (ssget (list '(0 . "INSERT") (list -3 (list *SC3D_APP*))))
+    )
+  )
+  (setq out '())
+  (if ss
+    (progn
+      (setq n (sslength ss))
+      (setq i 0)
+      (while (< i n)
+        (setq e (ssname ss i))
+        (if (SC3D:CAMERA-INSERT-P e)
+          (setq out (append out (list e)))
+        )
+        (setq i (+ i 1))
+      )
+    )
+  )
+  out
+)
+
+(defun SC3D:CAM-EXPORT-LAYER (e / ed h lay)
+  ;; Chaque camera recoit son propre calque pour pouvoir etre gelee individuellement
+  ;; dans chaque fenetre de presentation.
+  (setq ed (entget e))
+  (setq h (cdr (assoc 5 ed)))
+  (setq lay (strcat "SC3D_CV_" h))
+  (SC3D:LAYER lay 2)
+  (if (/= (strcase (cdr (assoc 8 ed))) (strcase lay))
+    (entmod (subst (cons 8 lay) (assoc 8 ed) ed))
+  )
+  lay
+)
+
+(defun SC3D:ENT-BBOX (e / obj mn mx)
+  (setq obj (vlax-ename->vla-object e))
+  (vla-GetBoundingBox obj 'mn 'mx)
+  (list (vlax-safearray->list mn) (vlax-safearray->list mx))
+)
+
+(defun SC3D:CAM-REC (e / cfg vals bb)
+  ;; Fiche d'export d'une camera : entite, calque dedie, nom, situation, emprise.
+  (setq cfg (SC3D:GET-XDATA e))
+  (setq vals (if cfg (SC3D:CFG-VALS cfg) nil))
+  (if vals
+    (progn
+      (setq bb (SC3D:ENT-BBOX e))
+      (list
+        (cons 'ent e)
+        (cons 'lay (SC3D:CAM-EXPORT-LAYER e))
+        (cons 'name (if (cdr (assoc 'cvname vals)) (cdr (assoc 'cvname vals)) ""))
+        (cons 'sit (if (cdr (assoc 'situation vals)) (cdr (assoc 'situation vals)) ""))
+        (cons 'bmin (car bb))
+        (cons 'bmax (cadr bb))
+      )
+    )
+    nil
+  )
+)
+
+(defun SC3D:LAYOUT-EXISTS-P (name)
+  (member (strcase name) (mapcar 'strcase (layoutlist)))
+)
+
+(defun SC3D:SAFE-LAYOUT-NAME (s / bad)
+  (if (or (null s) (= s "")) (setq s "CV"))
+  (setq bad '("<" ">" "/" "\\" "\"" ":" ";" "?" "*" "|" "," "=" "`"))
+  (foreach c bad
+    (setq s (SC3D:REPL s c "_"))
+  )
+  (if (> (strlen s) 200) (setq s (substr s 1 200)))
+  s
+)
+
+(defun SC3D:UNIQUE-LAYOUT-NAME (base / name n)
+  (setq base (SC3D:SAFE-LAYOUT-NAME base))
+  (setq name base)
+  (setq n 1)
+  (while (SC3D:LAYOUT-EXISTS-P name)
+    (setq n (+ n 1))
+    (setq name (strcat base "_" (itoa n)))
+  )
+  name
+)
+
+(defun SC3D:NEXT-CV-NAME (/ name)
+  ;; Prochain nom libre CV_1, CV_2, ... (saute les presentations deja existantes).
+  (setq name nil)
+  (while (null name)
+    (setq *SC3D_CV_COUNTER* (+ *SC3D_CV_COUNTER* 1))
+    (if (not (SC3D:LAYOUT-EXISTS-P (strcat "CV_" (itoa *SC3D_CV_COUNTER*))))
+      (setq name (strcat "CV_" (itoa *SC3D_CV_COUNTER*)))
+    )
+  )
+  name
+)
+
+(defun SC3D:DELETE-LAYOUT-VIEWPORTS (layName / ss i e ed)
+  ;; Supprime la fenetre creee par defaut avec la presentation.
+  ;; L'entree VIEWPORT dont l'id (69) vaut 1 represente l'espace papier lui-meme :
+  ;; on la conserve toujours.
+  (setq ss (ssget "_X" (list '(0 . "VIEWPORT") (cons 410 layName))))
+  (if ss
+    (progn
+      (setq i 0)
+      (while (< i (sslength ss))
+        (setq e (ssname ss i))
+        (setq ed (entget e))
+        (if (and ed (/= (cdr (assoc 69 ed)) 1))
+          (entdel e)
+        )
+        (setq i (+ i 1))
+      )
+    )
+  )
+)
+
+(defun SC3D:VP-FREEZE-CAMS (vpEnt showLay / echo)
+  ;; Gel de calques propre a une fenetre via VPLAYER (fiable sous BricsCAD,
+  ;; contrairement a la modification directe des entrees 331 du VIEWPORT) :
+  ;; tous les calques cameras SC3D_CV_* sont geles dans cette fenetre, puis
+  ;; seul le calque showLay (la camera a presenter) est degele.
+  ;; showLay = nil : tout reste gele (fenetre de legende).
+  (setq echo (getvar "CMDECHO"))
+  (setvar "CMDECHO" 0)
+  (command "_.VPLAYER" "_Freeze" "SC3D_CV_*" "_Select" vpEnt "" "")
+  (if showLay
+    (command "_.VPLAYER" "_Thaw" showLay "_Select" vpEnt "" "")
+  )
+  (setvar "CMDECHO" echo)
+)
+
+(defun SC3D:VP-ZOOM (vpEnt bmin bmax mrg / id echo dx dy p1 p2)
+  ;; Cadre la fenetre sur l'emprise modele bmin/bmax (mrg = marge par cote, en
+  ;; fraction de l'emprise ; 0.0 = zoom exactement entre les deux extremites).
+  ;; La fenetre est activee (MSPACE + CVPORT) puis un ZOOM Fenetre est applique -
+  ;; methode fiable sous BricsCAD, contrairement au reglage Target/CustomScale par
+  ;; l'API - avant de revenir en espace papier.
+  (setq id (cdr (assoc 69 (entget vpEnt))))
+  (setq dx (* mrg (SC3D:MAX 0.001 (- (car bmax) (car bmin)))))
+  (setq dy (* mrg (SC3D:MAX 0.001 (- (cadr bmax) (cadr bmin)))))
+  (setq p1 (list (- (car bmin) dx) (- (cadr bmin) dy) 0.0))
+  (setq p2 (list (+ (car bmax) dx) (+ (cadr bmax) dy) 0.0))
+  (setq echo (getvar "CMDECHO"))
+  (setvar "CMDECHO" 0)
+  (command "_.MSPACE")
+  (setvar "CVPORT" id)
+  ;; Les emprises sont en WCS : conversion vers l'UCS courant pour ZOOM.
+  (command "_.ZOOM" "_W" (trans p1 0 1) (trans p2 0 1))
+  (command "_.PSPACE")
+  (setvar "CMDECHO" echo)
+)
+
+(defun SC3D:ADD-VIEWPORT (layout cx cy w h bmin bmax mrg showLay / pspc vp en)
+  ;; Cree une fenetre (PViewport) centree en (cx cy) sur le papier, de taille w x h,
+  ;; cadree sur l'emprise modele bmin/bmax (mrg = marge de zoom par cote).
+  ;; Toutes les cameras y sont gelees sauf showLay.
+  (setq pspc (vla-get-Block layout))
+  (setq vp (vla-AddPViewport pspc (vlax-3d-point (list cx cy 0.0)) w h))
+  (vla-Display vp :vlax-true)
+  (setq en (vlax-vla-object->ename vp))
+  (SC3D:VP-ZOOM en bmin bmax mrg)
+  (SC3D:VP-FREEZE-CAMS en showLay)
+  vp
+)
+
+(defun SC3D:SET-LAYOUT-PAPER (layout / r)
+  ;; Regle la mise en page de la presentation : papier 630 x 297 mm (paysage),
+  ;; marges de 13 mm a gauche, a droite, en haut et en bas.
+  (setq r (vl-catch-all-apply 'SC3D:SET-LAYOUT-PAPER-1 (list layout)))
+  (if (or (vl-catch-all-error-p r) (null r))
+    (progn
+      (princ "\n  -> Mise en page non reglee automatiquement : definir manuellement")
+      (princ "\n     630 x 297 mm, marges 13 mm, orientation paysage.")
+      nil
+    )
+    T
+  )
+)
+
+(defun SC3D:SET-LAYOUT-PAPER-1 (layout / en ed pairs pr)
+  ;; Ecriture directe des parametres de trace dans l'objet LAYOUT (codes DXF de
+  ;; AcDbPlotSettings) : fiable sous BricsCAD, y compris pour un format papier
+  ;; personnalise que l'imprimante ne propose pas.
+  (setq en (vlax-vla-object->ename layout))
+  (setq ed (entget en))
+  (setq pairs
+    (list
+      (cons 40 *SC3D_PAGE_MARGIN*)   ;; marge gauche (mm)
+      (cons 41 *SC3D_PAGE_MARGIN*)   ;; marge basse (mm)
+      (cons 42 *SC3D_PAGE_MARGIN*)   ;; marge droite (mm)
+      (cons 43 *SC3D_PAGE_MARGIN*)   ;; marge haute (mm)
+      (cons 44 630.0)  ;; epaisseur (largeur) du papier (mm)
+      (cons 45 297.0)  ;; hauteur du papier (mm)
+      (cons 46 0.0)    ;; origine du trace X
+      (cons 47 0.0)    ;; origine du trace Y
+      (cons 72 1)      ;; unites papier : millimetres
+      (cons 73 0)      ;; rotation 0 : paysage (largeur > hauteur)
+    )
+  )
+  (foreach pr pairs
+    (if (assoc (car pr) ed)
+      (setq ed (subst pr (assoc (car pr) ed) ed))
+      (setq ed (append ed (list pr)))
+    )
+  )
+  (entmod ed)
+  T
+)
+
+(defun SC3D:PS-RECT (layout x1 y1 x2 y2 / arr pl)
+  ;; Rectangle en espace papier (cadre A4).
+  (setq arr (vlax-make-safearray vlax-vbDouble '(0 . 7)))
+  (vlax-safearray-fill arr (list x1 y1 x2 y1 x2 y2 x1 y2))
+  (setq pl (vla-AddLightWeightPolyline (vla-get-Block layout) arr))
+  (vla-put-Closed pl :vlax-true)
+  (vla-put-Layer pl "SC3D_CADRE")
+  pl
+)
+
+(defun SC3D:PS-TEXT (layout x y h txt / mt)
+  ;; Texte en espace papier, centre sur (x y).
+  (setq mt (vla-AddMText (vla-get-Block layout) (vlax-3d-point (list x y 0.0)) 0.0 txt))
+  (vla-put-Height mt h)
+  (vla-put-AttachmentPoint mt 5) ;; centre
+  (vla-put-InsertionPoint mt (vlax-3d-point (list x y 0.0)))
+  (vla-put-Layer mt "SC3D_CADRE")
+  mt
+)
+
+(defun SC3D:DRAW-A4-FRAMES (layout cw uh)
+  ;; Trois cadres cote a cote, entierement DANS la zone imprimable (l'origine
+  ;; (0,0) de l'espace papier est au coin de cette zone) : chaque volet fait un
+  ;; tiers de la zone utile.
+  (SC3D:LAYER "SC3D_CADRE" 7)
+  (SC3D:PS-RECT layout 0.0 0.0 cw uh)
+  (SC3D:PS-RECT layout cw 0.0 (* 2.0 cw) uh)
+  (SC3D:PS-RECT layout (* 2.0 cw) 0.0 (* 3.0 cw) uh)
+)
+
+(defun SC3D:EXPORT-MAKE-LAYOUT (baseName legendBox existRec projRec camMrg / doc name layout uw uh cw vpW vpH midY titY sitE lblE lw lh k lvW lvH)
+  ;; Cree une presentation en 3 volets, ENTIEREMENT dans la zone imprimable
+  ;; (papier 630 x 297 paysage, marges 13 mm -> zone utile 604 x 271 ; l'origine
+  ;; (0,0) de l'espace papier correspond au coin de cette zone) :
+  ;;   volet 1 : legende (toutes les cameras gelees)
+  ;;   volet 2 : situation existante (ou camera seule) - toutes les autres gelees
+  ;;   volet 3 : situation projetee, cadree sur son propre champ de vision
+  ;; Les cadres, les titres et les fenetres restent tous dans la zone imprimable.
+  (setq doc (SC3D:ACAD-DOC))
+  (setq name (SC3D:UNIQUE-LAYOUT-NAME baseName))
+  (setq layout (vla-Add (vla-get-Layouts doc) name))
+
+  ;; L'activation de la presentation peut creer la fenetre par defaut : on la supprime.
+  (setvar "CTAB" name)
+  (SC3D:DELETE-LAYOUT-VIEWPORTS name)
+
+  ;; Mise en page : papier 630 x 297 paysage, marges 13 mm.
+  (SC3D:SET-LAYOUT-PAPER layout)
+
+  ;; Zone imprimable et largeur d'un volet (un tiers de la zone utile).
+  (setq uw (- 630.0 (* 2.0 *SC3D_PAGE_MARGIN*)))
+  (setq uh (- 297.0 (* 2.0 *SC3D_PAGE_MARGIN*)))
+  (setq cw (/ uw 3.0))
+
+  (SC3D:DRAW-A4-FRAMES layout cw uh)
+
+  ;; Fenetres : marge interieure de 10 mm, plus une bande de 8 mm reservee en
+  ;; haut de chaque volet pour le titre.
+  (setq vpW (- cw (* 2.0 *SC3D_VP_MARGIN*)))
+  (setq vpH (- uh (* 2.0 *SC3D_VP_MARGIN*) 8.0))
+  (setq midY (+ *SC3D_VP_MARGIN* (/ vpH 2.0)))
+  (setq titY (- uh 6.0))
+
+  ;; Titres des volets, dans la bande superieure de la zone imprimable.
+  (setq sitE (cdr (assoc 'sit existRec)))
+  (setq lblE
+    (cond
+      (projRec "Situation existante")
+      ((= sitE "EXIST") "Situation existante")
+      ((= sitE "PROJ") "Situation projet\\U+00E9e")
+      (T nil)
+    )
+  )
+  (if lblE
+    (SC3D:PS-TEXT layout (* 1.5 cw) titY 5.0 (strcat lblE " - " baseName))
+  )
+  (if projRec
+    (SC3D:PS-TEXT layout (* 2.5 cw) titY 5.0 (strcat "Situation projet\\U+00E9e - " baseName))
+  )
+
+  ;; Volet 1 : legende. La fenetre est dimensionnee aux memes proportions que la
+  ;; zone choisie (la plus grande possible dans le volet) : la legende remplit
+  ;; ainsi TOUTE la fenetre, bord a bord, sans bande vide.
+  (if legendBox
+    (progn
+      (setq lw (- (car (cadr legendBox)) (car (car legendBox))))
+      (setq lh (- (cadr (cadr legendBox)) (cadr (car legendBox))))
+      (if (< lw 0.001) (setq lw 0.001))
+      (if (< lh 0.001) (setq lh 0.001))
+      (setq k (SC3D:MIN (/ vpW lw) (/ vpH lh)))
+      (setq lvW (* k lw))
+      (setq lvH (* k lh))
+      (SC3D:ADD-VIEWPORT layout
+        (/ cw 2.0) midY
+        lvW lvH
+        (car legendBox) (cadr legendBox)
+        0.0
+        nil
+      )
+    )
+  )
+
+  ;; Volet 2 : situation existante (ou camera seule) : seul son calque reste degele.
+  (SC3D:ADD-VIEWPORT layout
+    (* 1.5 cw) midY
+    vpW vpH
+    (cdr (assoc 'bmin existRec)) (cdr (assoc 'bmax existRec))
+    camMrg
+    (cdr (assoc 'lay existRec))
+  )
+
+  ;; Volet 3 : situation projetee, cadree sur SON emprise, a l'endroit ou elle est
+  ;; dans le dessin : seul le calque de la projetee reste degele (l'existante et
+  ;; toutes les autres cameras sont cachees dans cette fenetre).
+  (if projRec
+    (SC3D:ADD-VIEWPORT layout
+      (* 2.5 cw) midY
+      vpW vpH
+      (cdr (assoc 'bmin projRec)) (cdr (assoc 'bmax projRec))
+      camMrg
+      (cdr (assoc 'lay projRec))
+    )
+  )
+
+  (princ (strcat "\nPresentation creee : " name))
+  name
+)
+
+(defun SC3D:FIND-SIT-REC (lst sit / found)
+  (foreach r lst
+    (if (and (null found) (= (cdr (assoc 'sit r)) sit))
+      (setq found r)
+    )
+  )
+  found
+)
+
+(defun SC3D:EXPORT-SINGLE (rec legendBox camMrg / base)
+  (setq base (cdr (assoc 'name rec)))
+  (if (or (null base) (= base ""))
+    (setq base (SC3D:NEXT-CV-NAME))
+  )
+  (SC3D:EXPORT-MAKE-LAYOUT base legendBox rec nil camMrg)
+)
+
+(defun SC3D:CMD-EXPORT (/ selEnts allEnts recs r e p1 p2 w1 w2 legendBox pct camMrg groups key grp lst existR projR curtab)
+  (setq curtab (getvar "CTAB"))
+  (if (/= curtab "Model")
+    (princ "\nExport a lancer depuis l'espace objet (Model).")
+    (progn
+      (princ "\nSelectionner les cameras a exporter : ")
+      (setq selEnts (SC3D:SSGET-CAMERAS nil))
+
+      (if (null selEnts)
+        (princ "\nAucun bloc camera selectionne.")
+        (progn
+          ;; Zone de legende (optionnelle), choisie dans le dessin. Elle sera affichee
+          ;; dans le 1er A4 de chaque presentation.
+          (setq legendBox nil)
+          (setq p1 (getpoint "\nPremier coin de la zone de legende <Entree = pas de legende> : "))
+          (if p1
+            (progn
+              (setq p2 (getcorner p1 "\nCoin oppose de la zone de legende : "))
+              (if p2
+                (progn
+                  (setq w1 (SC3D:UCS-PT->WCS p1))
+                  (setq w2 (SC3D:UCS-PT->WCS p2))
+                  (setq legendBox
+                    (list
+                      (list (SC3D:MIN (car w1) (car w2)) (SC3D:MIN (cadr w1) (cadr w2)) 0.0)
+                      (list (SC3D:MAX (car w1) (car w2)) (SC3D:MAX (cadr w1) (cadr w2)) 0.0)
+                    )
+                  )
+                )
+              )
+            )
+          )
+
+          ;; Zoom souhaite sur les cameras : marge autour de l'emprise du champ de
+          ;; vision, en % (0 = champ au plus pres ; plus la valeur est grande, plus
+          ;; on voit de choses autour). Memorise pour l'export suivant.
+          (setq pct
+            (getreal
+              (strcat
+                "\nMarge de zoom autour des champs de vision en % <"
+                (rtos *SC3D_EXPORT_ZOOM* 2 0)
+                "> : "
+              )
+            )
+          )
+          (if (null pct) (setq pct *SC3D_EXPORT_ZOOM*))
+          (if (< pct 0.0) (setq pct 0.0))
+          (setq *SC3D_EXPORT_ZOOM* pct)
+          (setq camMrg (/ pct 200.0))
+
+          ;; Toutes les cameras du dessin (selectionnees ou non) recoivent leur propre
+          ;; calque SC3D_CV_* : dans chaque fenetre, toutes sont gelees via le motif
+          ;; SC3D_CV_*, sauf celle presentee.
+          (setq allEnts (SC3D:SSGET-CAMERAS "_X"))
+          (foreach e allEnts
+            (SC3D:CAM-EXPORT-LAYER e)
+          )
+
+          (setq recs '())
+          (foreach e selEnts
+            (setq r (SC3D:CAM-REC e))
+            (if r (setq recs (append recs (list r))))
+          )
+
+          (setq *SC3D_CV_COUNTER* 0)
+
+          ;; Regroupement par nom de champ de vision (insensible a la casse).
+          (setq groups '())
+          (foreach r recs
+            (setq key (strcase (cdr (assoc 'name r))))
+            (setq grp (assoc key groups))
+            (if grp
+              (setq groups (subst (cons key (append (cdr grp) (list r))) grp groups))
+              (setq groups (append groups (list (cons key (list r)))))
+            )
+          )
+
+          (foreach grp groups
+            (setq key (car grp))
+            (setq lst (cdr grp))
+            (if (= key "")
+              ;; Cameras sans nom : une presentation CV_n chacune.
+              (foreach r lst (SC3D:EXPORT-SINGLE r legendBox camMrg))
+              (progn
+                (setq existR (SC3D:FIND-SIT-REC lst "EXIST"))
+                (setq projR (SC3D:FIND-SIT-REC lst "PROJ"))
+                (if (and existR projR)
+                  (progn
+                    ;; Meme nom + une existante et une projetee :
+                    ;; presentation combinee existante (2e A4) / projetee (3e A4).
+                    (SC3D:EXPORT-MAKE-LAYOUT
+                      (cdr (assoc 'name existR))
+                      legendBox
+                      existR
+                      projR
+                      camMrg
+                    )
+                    ;; Les eventuelles autres cameras du meme nom : une presentation chacune.
+                    (foreach r lst
+                      (if (and (not (equal r existR)) (not (equal r projR)))
+                        (SC3D:EXPORT-SINGLE r legendBox camMrg)
+                      )
+                    )
+                  )
+                  ;; Pas de paire existante/projetee : une presentation par camera.
+                  (foreach r lst (SC3D:EXPORT-SINGLE r legendBox camMrg))
+                )
+              )
+            )
+          )
+
+          (setvar "CTAB" "Model")
+          (command "_.REGEN")
+          (princ "\nExport termine.")
+        )
+      )
+    )
+  )
+  (princ)
+)
+
 (defun SC3D:MENU-CAMERA (/ choix)
-  (initget "C M L J A S T V")
+  (initget "C M L J A S T V E")
   (setq choix
     (getkword
-      "\nCamera - action [Creer/Modifier/caLculer/aJuster/Ajouter/Supprimer/Texte/Visibilite] <C> : "
+      "\nCamera - action [Creer/Modifier/caLculer/aJuster/Ajouter/Supprimer/Texte/Visibilite/Exporter] <C> : "
     )
   )
   (if (null choix)
@@ -5407,6 +5978,9 @@
     )
     ((= choix "V")
       (SC3D:CMD-VISIBILITE)
+    )
+    ((= choix "E")
+      (SC3D:CMD-EXPORT)
     )
   )
 
