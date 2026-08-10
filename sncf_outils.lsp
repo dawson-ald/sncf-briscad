@@ -2836,6 +2836,7 @@
   (SC3D:LAYER "SC3D_PPM_25" 4)
   (SC3D:LAYER "SC3D_PPM_20" 5)
   (SC3D:LAYER "SC3D_PPM_12" 5)
+  (SC3D:LAYER "SC3D_PPM_2" 9)
 )
 
 ;; ------------------------------------------------------------------------------------
@@ -3538,6 +3539,8 @@
       (list 80.0   "SC3D_PPM_80"   3 (SC3D:RGB 125 255 105))
       (list 40.0   "SC3D_PPM_40"   4 (SC3D:RGB 85 220 230))
       (list 20.0   "SC3D_PPM_20"   5 (SC3D:RGB 95 145 235))
+      ;; Zone supplementaire 20 a 2 PPM.
+      (list 2.0    "SC3D_PPM_2"    9 (SC3D:RGB 160 90 220))
     )
     (list
       (list 1000.0 "SC3D_PPM_1000" 6 (SC3D:RGB 255 0 130))
@@ -3546,6 +3549,8 @@
       (list 62.0   "SC3D_PPM_62"   3 (SC3D:RGB 0 255 0))
       (list 25.0   "SC3D_PPM_25"   4 (SC3D:RGB 0 255 255))
       (list 12.0   "SC3D_PPM_12"   5 (SC3D:RGB 0 95 255))
+      ;; Zone supplementaire 12 a 2 PPM.
+      (list 2.0    "SC3D_PPM_2"    9 (SC3D:RGB 160 90 220))
     )
   )
 )
