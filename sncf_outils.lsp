@@ -2164,6 +2164,16 @@
   (append out (list s))
 )
 
+(defun SC3D:JOIN (lst sep / out first x)
+  (setq out "")
+  (setq first T)
+  (foreach x lst
+    (setq out (if first x (strcat out sep x)))
+    (setq first nil)
+  )
+  out
+)
+
 (defun SC3D:RES-BASIC (s / p)
   (setq p (vl-string-search " " s))
   (if p
@@ -2827,22 +2837,6 @@
   )
 )
 
-(defun SC3D:LAYER-SET-NOPLOT (name / e ed)
-  ;; Le calque existe (cree par SC3D:LAYER) : on force juste son flag Plot a 0
-  ;; pour que son contenu reste visible a l'ecran mais disparaisse a l'impression.
-  (setq e (tblobjname "LAYER" name))
-  (if e
-    (progn
-      (setq ed (entget e))
-      (if (assoc 290 ed)
-        (setq ed (subst (cons 290 0) (assoc 290 ed) ed))
-        (setq ed (append ed (list (cons 290 0))))
-      )
-      (entmod ed)
-    )
-  )
-)
-
 (defun SC3D:SAFE-LAYER-NAME (s / bad)
   ;; Nettoie un nom pour pouvoir l'utiliser comme nom de calque.
   (if (or (null s) (= s ""))
@@ -2884,6 +2878,36 @@
   )
 )
 
+(defun SC3D:CV-LAYER-NAME (vals handle / cvname sit)
+  ;; Calque dedie a une camera (une par champ de vision), utilise pour pouvoir
+  ;; geler/degeler chaque camera individuellement (cf. VP freeze a l'export) :
+  ;; SC3D_<NOM DU CHAMP DE VISION>_<SITUATION> si le champ a un nom, sinon
+  ;; SC3D_CV_<handle> (toujours unique, meme sans nom).
+  (setq cvname (cdr (assoc 'cvname vals)))
+  (setq sit (cdr (assoc 'situation vals)))
+  (if (and cvname (/= cvname ""))
+    (if (and sit (/= sit ""))
+      (strcat "SC3D_" (SC3D:SAFE-LAYER-NAME cvname) "_" sit)
+      (strcat "SC3D_" (SC3D:SAFE-LAYER-NAME cvname))
+    )
+    (strcat "SC3D_CV_" handle)
+  )
+)
+
+(defun SC3D:CAM-LAYER-ASSIGN (e vals / ed h lay)
+  ;; Cree (si besoin) et affecte a la camera e son calque dedie (SC3D:CV-LAYER-NAME).
+  ;; Appele a la creation et a la modification (directement), et repris a l'export
+  ;; pour rester coherent avec les cameras crees avant l'ajout de ce mecanisme.
+  (setq ed (entget e))
+  (setq h (cdr (assoc 5 ed)))
+  (setq lay (SC3D:CV-LAYER-NAME vals h))
+  (SC3D:LAYER lay 2)
+  (if (/= (strcase (cdr (assoc 8 ed))) (strcase lay))
+    (entmod (subst (cons 8 lay) (assoc 8 ed) ed))
+  )
+  lay
+)
+
 
 (defun SC3D:SETUP-LAYERS ()
   (SC3D:LAYER "SC3D_GRILLE" 8)
@@ -2891,7 +2915,7 @@
   (SC3D:LAYER "SC3D_RAYONS" 4)
   (SC3D:LAYER "SC3D_AXE" 7)
   (SC3D:LAYER "SC3D_TEXTES" 7)
-  (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
+  (SC3D:LAYER "SC3D_AJUSTEMENT" 30)
   (SC3D:LAYER "SC3D_HACHURE" 3)
   (SC3D:LAYER "SC3D_NON_VISIBLE" 1)
   (SC3D:LAYER "SC3D_PPM_1500" 1)
@@ -2906,9 +2930,6 @@
   (SC3D:LAYER "SC3D_PPM_20" 5)
   (SC3D:LAYER "SC3D_PPM_12" 5)
   (SC3D:LAYER "SC3D_PPM_2" 9)
-  ;; Contours des polygones de zones PPM : visibles a l'ecran, jamais imprimes.
-  (SC3D:LAYER "SC3D_PPM_CONTOUR" 8)
-  (SC3D:LAYER-SET-NOPLOT "SC3D_PPM_CONTOUR")
 )
 
 ;; ------------------------------------------------------------------------------------
@@ -3304,6 +3325,57 @@
   )
 )
 
+(defun SC3D:ZONE-HATCH-RAW (pts lay aci rgb trans / npts z midX midY)
+  ;; Hachure pleine (motif SOLID) sur un contour plan quelconque (3 sommets ou
+  ;; plus) : remplace un SOLID par une vraie entite HATCH.
+  (setq npts (length pts))
+  (setq z (if (caddr (car pts)) (caddr (car pts)) 0.0))
+  (setq midX (/ (apply '+ (mapcar 'car pts)) (float npts)))
+  (setq midY (/ (apply '+ (mapcar 'cadr pts)) (float npts)))
+  (entmake
+    (append
+      (list
+        '(0 . "HATCH")
+        '(100 . "AcDbEntity")
+        (cons 8 lay)
+        (cons 62 aci)
+        (cons 420 rgb)
+        (cons 440 (SC3D:TRANS-DXF trans))
+        '(100 . "AcDbHatch")
+        (list 10 0.0 0.0 z)
+        '(210 0.0 0.0 1.0)
+        '(2 . "SOLID")
+        '(70 . 1)
+        '(71 . 0)
+        '(91 . 1)
+        '(92 . 2)
+        '(72 . 0)
+        '(73 . 1)
+        (cons 93 npts)
+      )
+      (mapcar '(lambda (pt) (cons 10 (list (car pt) (cadr pt)))) pts)
+      (list
+        '(75 . 0)
+        '(76 . 1)
+        '(98 . 1)
+        (cons 10 (list midX midY))
+      )
+    )
+  )
+)
+
+(defun SC3D:ZONE-HATCH (p1 p2 p3 p4 lay aci rgb trans / frags frag)
+  (if *SC3D_CLIP_POLY*
+    (progn
+      (setq frags (SC3D:CLIP-FLAT-POLY (list p1 p2 p3 p4)))
+      (foreach frag frags
+        (SC3D:ZONE-HATCH-RAW frag lay aci rgb trans)
+      )
+    )
+    (SC3D:ZONE-HATCH-RAW (list p1 p2 p3 p4) lay aci rgb trans)
+  )
+)
+
 (defun SC3D:FACE-RAW (p1 p2 p3 p4 lay col)
   (entmake
     (list
@@ -3398,11 +3470,7 @@
   )
 )
 
-(defun SC3D:GROUND-BAND (x1 x2 maxD tanH tilt camH objH lay aci rgb trans edgeLay / w1 w2 p1 p2 p3 p4 e1 e2 e3 e4)
-  ;; edgeLay : calque du contour du polygone (nil = meme calque que le remplissage,
-  ;; comportement d'origine). Passer un calque non-imprimable pour les zones PPM,
-  ;; dont le contour ne doit pas apparaitre a l'impression.
-  (if (null edgeLay) (setq edgeLay lay))
+(defun SC3D:GROUND-BAND (x1 x2 maxD tanH tilt camH objH lay aci rgb trans hatch / w1 w2 p1 p2 p3 p4 e1 e2 e3 e4)
   (if (> x2 x1)
     (progn
       (setq w1 (SC3D:CONE-HALF-WIDTH x1 maxD tanH tilt camH objH))
@@ -3418,12 +3486,15 @@
       (setq e3 (SC3D:P x2 w2 *SC3D_PPM_EDGE_Z*))
       (setq e4 (SC3D:P x2 (- w2) *SC3D_PPM_EDGE_Z*))
 
-      (SC3D:ZONE-SOLID p1 p2 p3 p4 lay aci rgb trans)
+      (if hatch
+        (SC3D:ZONE-HATCH p1 p2 p3 p4 lay aci rgb trans)
+        (SC3D:ZONE-SOLID p1 p2 p3 p4 lay aci rgb trans)
+      )
 
-      (SC3D:LINE e1 e2 edgeLay aci)
-      (SC3D:LINE e2 e3 edgeLay aci)
-      (SC3D:LINE e3 e4 edgeLay aci)
-      (SC3D:LINE e4 e1 edgeLay aci)
+      (SC3D:LINE e1 e2 lay aci)
+      (SC3D:LINE e2 e3 lay aci)
+      (SC3D:LINE e3 e4 lay aci)
+      (SC3D:LINE e4 e1 lay aci)
     )
   )
 )
@@ -3648,7 +3719,7 @@
         (setq x2 (SC3D:MIN d maxD))
 
         (if (> x2 x1)
-          (SC3D:GROUND-BAND x1 x2 maxD tanH tilt camH objH lay aci rgb trans "SC3D_PPM_CONTOUR")
+          (SC3D:GROUND-BAND x1 x2 maxD tanH tilt camH objH lay aci rgb trans T)
         )
 
         (if (and (> d nearD) (<= d maxD))
@@ -3887,7 +3958,7 @@
         1
         (SC3D:RGB 120 0 0)
         trans
-        nil
+        T
       )
     )
     (progn
@@ -3904,7 +3975,7 @@
           1
           (SC3D:RGB 120 0 0)
           trans
-          nil
+          T
         )
       )
 
@@ -3961,11 +4032,7 @@
   (SC3D:P x y 0.0)
 )
 
-(defun SC3D:SIDE-BAND (x1 x2 h lay aci rgb trans edgeLay / p1 p2 p3 p4)
-  ;; edgeLay : calque du contour du polygone (nil = meme calque que le remplissage,
-  ;; comportement d'origine). Passer un calque non-imprimable pour les zones PPM,
-  ;; dont le contour ne doit pas apparaitre a l'impression.
-  (if (null edgeLay) (setq edgeLay lay))
+(defun SC3D:SIDE-BAND (x1 x2 h lay aci rgb trans hatch / p1 p2 p3 p4)
   (if (< x1 0.0) (setq x1 0.0))
   (if (< x2 0.0) (setq x2 0.0))
   (if (< h 0.0) (setq h 0.0))
@@ -3977,11 +4044,14 @@
       (setq p3 (SC3D:SIDE-P x2 h))
       (setq p4 (SC3D:SIDE-P x1 h))
 
-      (SC3D:ZONE-SOLID p1 p2 p3 p4 lay aci rgb trans)
-      (SC3D:LINE p1 p2 edgeLay aci)
-      (SC3D:LINE p2 p3 edgeLay aci)
-      (SC3D:LINE p3 p4 edgeLay aci)
-      (SC3D:LINE p4 p1 edgeLay aci)
+      (if hatch
+        (SC3D:ZONE-HATCH p1 p2 p3 p4 lay aci rgb trans)
+        (SC3D:ZONE-SOLID p1 p2 p3 p4 lay aci rgb trans)
+      )
+      (SC3D:LINE p1 p2 lay aci)
+      (SC3D:LINE p2 p3 lay aci)
+      (SC3D:LINE p3 p4 lay aci)
+      (SC3D:LINE p4 p1 lay aci)
     )
   )
 )
@@ -4003,7 +4073,7 @@
         (setq x2 (SC3D:MIN d maxD))
 
         (if (> x2 x1)
-          (SC3D:SIDE-BAND x1 x2 objH lay aci rgb trans "SC3D_PPM_CONTOUR")
+          (SC3D:SIDE-BAND x1 x2 objH lay aci rgb trans T)
         )
 
         (if (>= d maxD)
@@ -4157,7 +4227,7 @@
         1
         (SC3D:RGB 120 0 0)
         trans
-        nil
+        T
       )
     )
     (progn
@@ -4170,7 +4240,7 @@
           1
           (SC3D:RGB 120 0 0)
           trans
-          nil
+          T
         )
       )
 
@@ -4202,7 +4272,11 @@
   (if (and h (/= h ""))
     (progn
       (setq e (handent h))
-      (if e (entdel e))
+      ;; entget renvoie nil si l'entite a deja ete supprimee (par exemple a la
+      ;; main dans le dessin) : appeler entdel dans ce cas la restaurerait au
+      ;; lieu de la laisser supprimee (entdel sur une entite deja effacee
+      ;; annule l'effacement au lieu de la supprimer).
+      (if (and e (entget e)) (entdel e))
     )
   )
 )
@@ -4283,6 +4357,10 @@
     )
   )
 
+  ;; Calque dedie a cette camera (par champ de vision) : gere directement a la
+  ;; creation, sans attendre l'export (cf. SC3D:CAM-LAYER-ASSIGN).
+  (SC3D:CAM-LAYER-ASSIGN ins vals)
+
   ;; Le texte recapitulatif n'est plus cree automatiquement : voir SC3D:CMD-GENERER-TEXTE
   ;; (menu Camera, option Texte), pour eviter d'ecraser/dupliquer un texte deja place.
   (setq cfg (SC3D:CFG-STR vals ""))
@@ -4331,6 +4409,10 @@
       )
     )
   )
+
+  ;; Calque dedie a cette camera (par champ de vision) : gere directement a la
+  ;; creation, sans attendre l'export (cf. SC3D:CAM-LAYER-ASSIGN).
+  (SC3D:CAM-LAYER-ASSIGN ins vals)
 
   ;; Le texte recapitulatif n'est plus cree automatiquement : voir SC3D:CMD-GENERER-TEXTE
   ;; (menu Camera, option Texte), pour eviter d'ecraser/dupliquer un texte deja place.
@@ -4895,7 +4977,7 @@
       (list
         '(0 . "LINE")
         (cons 8 "SC3D_AJUSTEMENT")
-        (cons 62 2)
+        (cons 62 30)
         (cons 10 p1)
         (cons 11 p2)
       )
@@ -4916,7 +4998,7 @@
 )
 
 (defun SC3D:GET-POLY-POINTS (/ pts pt tempEnts closeEnt olderr result finished)
-  (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
+  (SC3D:LAYER "SC3D_AJUSTEMENT" 30)
 
   (setq pts '())
   (setq tempEnts '())
@@ -5153,7 +5235,7 @@
 (defun SC3D:APPLY-CLIP (e active localPts / ed blockName cfg vals calc view)
   ;; Regenere la geometrie du bloc camera (meme nom de bloc = redefinition en
   ;; place) avec ou sans decoupe par localPts, sans jamais appeler XCLIP.
-  (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
+  (SC3D:LAYER "SC3D_AJUSTEMENT" 30)
   (setq ed (entget e))
   (setq blockName (cdr (assoc 2 ed)))
   (setq cfg (SC3D:GET-XDATA e))
@@ -5390,9 +5472,154 @@
   (princ)
 )
 
-(defun SC3D:CMD-GENERER-TEXTE (/ e ed cfg vals base rot view txtPt txt txtH newCfg)
+;; ------------------------------------------------------------------------------------
+;; REPERE "NOM DU CHAMP DE VISION" (rectangle + fleche directe vers la camera)
+;; ------------------------------------------------------------------------------------
+
+(defun SC3D:RECT-EXIT-POINT (cx cy hw hh dx dy / tx ty tt)
+  ;; Point ou le rayon issu du centre (cx cy) d'un rectangle axe (demi-largeur hw,
+  ;; demi-hauteur hh), en direction (dx dy), sort du rectangle. Utilise pour faire
+  ;; partir la fleche du bord du cadre plutot que de son centre (par-dessus le texte).
+  (if (and (equal dx 0.0 1e-6) (equal dy 0.0 1e-6)) (setq dx 1.0))
+  (setq tx (if (equal dx 0.0 1e-6) 1e9 (/ hw (abs dx))))
+  (setq ty (if (equal dy 0.0 1e-6) 1e9 (/ hh (abs dy))))
+  (setq tt (SC3D:MIN tx ty))
+  (list (+ cx (* tt dx)) (+ cy (* tt dy)) 0.0)
+)
+
+(defun SC3D:MODEL-RECT (p1 p2 lay col / x1 y1 x2 y2)
+  ;; Rectangle en espace objet, trace avec 4 lignes brutes (non decoupees).
+  (setq x1 (car p1)) (setq y1 (cadr p1))
+  (setq x2 (car p2)) (setq y2 (cadr p2))
+  (SC3D:LINE-RAW (list x1 y1 0.0) (list x2 y1 0.0) lay col)
+  (SC3D:LINE-RAW (list x2 y1 0.0) (list x2 y2 0.0) lay col)
+  (SC3D:LINE-RAW (list x2 y2 0.0) (list x1 y2 0.0) lay col)
+  (SC3D:LINE-RAW (list x1 y2 0.0) (list x1 y1 0.0) lay col)
+)
+
+(defun SC3D:LEADER-ARROW (p1 p2 lay col)
+  ;; Ligne directe de p1 a p2 (le champ de vision), sans pointe de fleche.
+  (SC3D:LINE-RAW (list (car p1) (cadr p1) 0.0) (list (car p2) (cadr p2) 0.0) lay col)
+)
+
+(defun SC3D:CREATE-LABEL-CV (camPt pt cvname / textH charW textW margin cx cy hw hh dx dy leaderStart blockName ins)
+  ;; Cree un bloc regroupant rectangle + texte (nom du champ de vision) + fleche
+  ;; directe vers camPt, et l'insere en un seul point (0,0,0) : toute la geometrie
+  ;; est deja en coordonnees WCS absolues, ce qui permet de ne suivre qu'une seule
+  ;; entite (l'INSERT) pour la suppression/regeneration ulterieure.
+  ;; NB : ce bloc ne recoit PAS le xdata de l'application (SC3D_CAMERA), pour ne
+  ;; jamais etre confondu avec un bloc camera par SC3D:CAMERA-INSERT-P et les
+  ;; selections qui s'y appuient (Export, Visibilite, etc.).
+  (setq textH 0.30)
+  (setq charW (* 0.6 textH))
+  (setq textW (SC3D:MAX (* charW (strlen cvname)) (* 2.0 textH)))
+  (setq margin 0.15)
+
+  (setq cx (car pt))
+  (setq cy (cadr pt))
+  (setq hw (+ (/ textW 2.0) margin))
+  (setq hh (+ (/ textH 2.0) margin))
+
+  (setq dx (- (car camPt) cx))
+  (setq dy (- (cadr camPt) cy))
+  (setq leaderStart (SC3D:RECT-EXIT-POINT cx cy hw hh dx dy))
+
+  (setq blockName (strcat "SC3D_LABEL_" (SC3D:REPL (rtos (getvar "CDATE") 2 8) "." "_")))
+
+  (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
+  (SC3D:MODEL-RECT (list (- cx hw) (- cy hh) 0.0) (list (+ cx hw) (+ cy hh) 0.0) "SC3D_TEXTES" 7)
+  (SC3D:TEXT-WORLD pt textH cvname "SC3D_TEXTES" 7 0.0)
+  (SC3D:LEADER-ARROW leaderStart camPt "SC3D_TEXTES" 7)
+  (entmake '((0 . "ENDBLK")))
+
+  (setq ins
+    (entmakex
+      (list
+        '(0 . "INSERT")
+        (cons 8 "SC3D_TEXTES")
+        (cons 2 blockName)
+        (cons 10 (list 0.0 0.0 0.0))
+        '(41 . 1.0)
+        '(42 . 1.0)
+        '(43 . 1.0)
+        (cons 50 0.0)
+      )
+    )
+  )
+  ins
+)
+
+(defun SC3D:GENERER-TEXTE-TYPE (e vals base rot view / txtPt txt txtH newCfg)
+  ;; Supprime l'ancien texte lie (s'il existe) avant d'en creer un nouveau,
+  ;; pour ne jamais en laisser deux en meme temps.
+  (SC3D:DELETE-TEXT-HANDLE vals)
+
+  (setq *SC3D_BASE* (list (car base) (cadr base) (if (caddr base) (caddr base) 0.0)))
+  (setq *SC3D_CA* (cos rot))
+  (setq *SC3D_SA* (sin rot))
+
+  (setq txtPt
+    (if (= view "SIDE")
+      (SC3D:PW 0.45 (+ (cdr (assoc 'camh vals)) 0.85) 0.0)
+      (SC3D:PW 0.45 -0.75 0.45)
+    )
+  )
+
+  (setq txt
+    (SC3D:TEXT-WORLD
+      txtPt
+      0.30
+      (if (= view "SIDE") (SC3D:SUMMARY-TEXT-SIDE vals) (SC3D:SUMMARY-TEXT vals))
+      "SC3D_TEXTES"
+      7
+      0.0
+    )
+  )
+
+  (setq txtH (cdr (assoc 5 (entget txt))))
+  (setq newCfg (SC3D:CFG-STR vals txtH))
+
+  (SC3D:SET-XDATA e newCfg)
+  (SC3D:SET-XDATA txt newCfg)
+
+  (command "_.REGEN")
+  (princ "\nTexte genere.")
+)
+
+(defun SC3D:GENERER-TEXTE-NOM (e vals base / cvname camPt pt ins newCfg)
+  (setq cvname (cdr (assoc 'cvname vals)))
+  (if (or (null cvname) (= cvname ""))
+    (princ "\nAucun nom de champ de vision defini pour cette camera (voir Modifier).")
+    (progn
+      (setq camPt (list (car base) (cadr base) (if (caddr base) (caddr base) 0.0)))
+      (setq pt (getpoint "\nPoint d'insertion du repere (nom du champ de vision) : "))
+
+      (if (null pt)
+        (princ "\nAnnule.")
+        (progn
+          ;; Supprime l'ancien texte lie (s'il existe) avant d'en creer un nouveau,
+          ;; pour ne jamais en laisser deux en meme temps.
+          (SC3D:DELETE-TEXT-HANDLE vals)
+
+          (setq ins (SC3D:CREATE-LABEL-CV camPt pt cvname))
+
+          (setq newCfg (SC3D:CFG-STR vals (cdr (assoc 5 (entget ins)))))
+          (SC3D:SET-XDATA e newCfg)
+
+          (command "_.REGEN")
+          (princ "\nTexte genere.")
+        )
+      )
+    )
+  )
+)
+
+(defun SC3D:CMD-GENERER-TEXTE (/ e ed cfg vals base rot view mode)
   ;; Cree (ou recree) le texte recapitulatif d'une camera existante, a la demande
   ;; (le texte n'est plus genere automatiquement par Creer/Modifier).
+  ;; Deux contenus possibles : le type de camera (texte recapitulatif fixe, comme
+  ;; avant) ou le nom du champ de vision (repere rectangle + fleche, positionne
+  ;; librement puis relie a la camera par une fleche directe).
   (setq e (SC3D:SELECT-CAMERA-BLOCK "\nSelectionner le bloc camera pour generer le texte : "))
 
   (if e
@@ -5408,40 +5635,16 @@
           (if (not rot) (setq rot 0.0))
           (setq view (cdr (assoc 'view vals)))
 
-          ;; Supprime l'ancien texte lie (s'il existe) avant d'en creer un nouveau,
-          ;; pour ne jamais en laisser deux en meme temps.
-          (SC3D:DELETE-TEXT-HANDLE vals)
-
-          (setq *SC3D_BASE* (list (car base) (cadr base) (if (caddr base) (caddr base) 0.0)))
-          (setq *SC3D_CA* (cos rot))
-          (setq *SC3D_SA* (sin rot))
-
-          (setq txtPt
-            (if (= view "SIDE")
-              (SC3D:PW 0.45 (+ (cdr (assoc 'camh vals)) 0.85) 0.0)
-              (SC3D:PW 0.45 -0.75 0.45)
-            )
+          (initget "Type Nom")
+          (setq mode
+            (getkword "\nContenu du texte [Type de camera/Nom du champ de vision] <Type> : ")
           )
+          (if (null mode) (setq mode "Type"))
 
-          (setq txt
-            (SC3D:TEXT-WORLD
-              txtPt
-              0.30
-              (if (= view "SIDE") (SC3D:SUMMARY-TEXT-SIDE vals) (SC3D:SUMMARY-TEXT vals))
-              "SC3D_TEXTES"
-              7
-              0.0
-            )
+          (if (= mode "Nom")
+            (SC3D:GENERER-TEXTE-NOM e vals base)
+            (SC3D:GENERER-TEXTE-TYPE e vals base rot view)
           )
-
-          (setq txtH (cdr (assoc 5 (entget txt))))
-          (setq newCfg (SC3D:CFG-STR vals txtH))
-
-          (SC3D:SET-XDATA e newCfg)
-          (SC3D:SET-XDATA txt newCfg)
-
-          (command "_.REGEN")
-          (princ "\nTexte genere.")
         )
         (princ "\nImpossible de lire les informations de cette camera.")
       )
@@ -5514,19 +5717,6 @@
   out
 )
 
-(defun SC3D:CAM-EXPORT-LAYER (e / ed h lay)
-  ;; Chaque camera recoit son propre calque pour pouvoir etre gelee individuellement
-  ;; dans chaque fenetre de presentation.
-  (setq ed (entget e))
-  (setq h (cdr (assoc 5 ed)))
-  (setq lay (strcat "SC3D_CV_" h))
-  (SC3D:LAYER lay 2)
-  (if (/= (strcase (cdr (assoc 8 ed))) (strcase lay))
-    (entmod (subst (cons 8 lay) (assoc 8 ed) ed))
-  )
-  lay
-)
-
 (defun SC3D:ENT-BBOX (e / obj mn mx)
   (setq obj (vlax-ename->vla-object e))
   (vla-GetBoundingBox obj 'mn 'mx)
@@ -5542,7 +5732,7 @@
       (setq bb (SC3D:ENT-BBOX e))
       (list
         (cons 'ent e)
-        (cons 'lay (SC3D:CAM-EXPORT-LAYER e))
+        (cons 'lay (SC3D:CAM-LAYER-ASSIGN e vals))
         (cons 'name (if (cdr (assoc 'cvname vals)) (cdr (assoc 'cvname vals)) ""))
         (cons 'sit (if (cdr (assoc 'situation vals)) (cdr (assoc 'situation vals)) ""))
         (cons 'bmin (car bb))
@@ -5610,15 +5800,23 @@
   )
 )
 
-(defun SC3D:VP-FREEZE-CAMS (vpEnt showLay / echo)
+(defun SC3D:VP-FREEZE-CAMS (vpEnt showLay / echo layStr)
   ;; Gel de calques propre a une fenetre via VPLAYER (fiable sous BricsCAD,
   ;; contrairement a la modification directe des entrees 331 du VIEWPORT) :
-  ;; tous les calques cameras SC3D_CV_* sont geles dans cette fenetre, puis
-  ;; seul le calque showLay (la camera a presenter) est degele.
+  ;; tous les calques camera de *SC3D_ALL_CV_LAYERS* (calcules par
+  ;; SC3D:CMD-EXPORT, un par champ de vision - plus un joker "SC3D_CV_*" pour
+  ;; les cameras sans nom) sont geles dans cette fenetre, puis seul le calque
+  ;; showLay (la camera a presenter) est degele.
   ;; showLay = nil : tout reste gele (fenetre de legende).
   (setq echo (getvar "CMDECHO"))
   (setvar "CMDECHO" 0)
-  (command "_.VPLAYER" "_Freeze" "SC3D_CV_*" "_Select" vpEnt "" "")
+  (setq layStr
+    (if (and (boundp '*SC3D_ALL_CV_LAYERS*) *SC3D_ALL_CV_LAYERS*)
+      (SC3D:JOIN *SC3D_ALL_CV_LAYERS* ",")
+      "SC3D_CV_*"
+    )
+  )
+  (command "_.VPLAYER" "_Freeze" layStr "_Select" vpEnt "" "")
   (if showLay
     (command "_.VPLAYER" "_Thaw" showLay "_Select" vpEnt "" "")
   )
@@ -5646,16 +5844,30 @@
   (setvar "CMDECHO" echo)
 )
 
-(defun SC3D:ADD-VIEWPORT (layout cx cy w h bmin bmax mrg showLay / pspc vp en)
+(defun SC3D:VP-SET-SHADE-OMBRE (vpEnt / id echo)
+  ;; Style visuel "Ombre" dans la fenetre : MSPACE + CVPORT (comme SC3D:VP-ZOOM)
+  ;; puis VSCURRENT "_Shaded" (mot-cle integre, locale-independant).
+  (setq id (cdr (assoc 69 (entget vpEnt))))
+  (setq echo (getvar "CMDECHO"))
+  (setvar "CMDECHO" 0)
+  (command "_.MSPACE")
+  (setvar "CVPORT" id)
+  (command "_.VSCURRENT" "_Shaded")
+  (command "_.PSPACE")
+  (setvar "CMDECHO" echo)
+)
+
+(defun SC3D:ADD-VIEWPORT (layout cx cy w h bmin bmax mrg showLay shaded / pspc vp en)
   ;; Cree une fenetre (PViewport) centree en (cx cy) sur le papier, de taille w x h,
   ;; cadree sur l'emprise modele bmin/bmax (mrg = marge de zoom par cote).
-  ;; Toutes les cameras y sont gelees sauf showLay.
+  ;; Toutes les cameras y sont gelees sauf showLay. shaded = T : style visuel "Ombre".
   (setq pspc (vla-get-Block layout))
   (setq vp (vla-AddPViewport pspc (vlax-3d-point (list cx cy 0.0)) w h))
   (vla-Display vp :vlax-true)
   (setq en (vlax-vla-object->ename vp))
   (SC3D:VP-ZOOM en bmin bmax mrg)
   (SC3D:VP-FREEZE-CAMS en showLay)
+  (if shaded (SC3D:VP-SET-SHADE-OMBRE en))
   vp
 )
 
@@ -5801,6 +6013,7 @@
         (car legendBox) (cadr legendBox)
         0.0
         nil
+        nil
       )
     )
   )
@@ -5812,6 +6025,7 @@
     (cdr (assoc 'bmin existRec)) (cdr (assoc 'bmax existRec))
     camMrg
     (cdr (assoc 'lay existRec))
+    T
   )
 
   ;; Volet 3 : situation projetee, cadree sur SON emprise, a l'endroit ou elle est
@@ -5824,6 +6038,7 @@
       (cdr (assoc 'bmin projRec)) (cdr (assoc 'bmax projRec))
       camMrg
       (cdr (assoc 'lay projRec))
+      T
     )
   )
 
@@ -5848,7 +6063,7 @@
   (SC3D:EXPORT-MAKE-LAYOUT base legendBox rec nil camMrg)
 )
 
-(defun SC3D:CMD-EXPORT (/ selEnts allEnts recs r e p1 p2 w1 w2 legendBox pct camMrg groups key grp lst existR projR curtab)
+(defun SC3D:CMD-EXPORT (/ selEnts allEnts recs r e p1 p2 w1 w2 legendBox pct camMrg groups key grp lst existR projR curtab cfg vals)
   (setq curtab (getvar "CTAB"))
   (if (/= curtab "Model")
     (princ "\nExport a lancer depuis l'espace objet (Model).")
@@ -5899,11 +6114,20 @@
           (setq camMrg (/ pct 200.0))
 
           ;; Toutes les cameras du dessin (selectionnees ou non) recoivent leur propre
-          ;; calque SC3D_CV_* : dans chaque fenetre, toutes sont gelees via le motif
-          ;; SC3D_CV_*, sauf celle presentee.
+          ;; calque (nom du champ de vision + situation, ou SC3D_CV_<handle> si le
+          ;; champ n'a pas de nom) : dans chaque fenetre, tous ces calques sont geles
+          ;; (liste dans *SC3D_ALL_CV_LAYERS*, cf. SC3D:VP-FREEZE-CAMS), sauf celui
+          ;; de la camera presentee.
           (setq allEnts (SC3D:SSGET-CAMERAS "_X"))
+          (setq *SC3D_ALL_CV_LAYERS* '())
           (foreach e allEnts
-            (SC3D:CAM-EXPORT-LAYER e)
+            (setq cfg (SC3D:GET-XDATA e))
+            (setq vals (if cfg (SC3D:CFG-VALS cfg) nil))
+            (if vals
+              (setq *SC3D_ALL_CV_LAYERS*
+                (append *SC3D_ALL_CV_LAYERS* (list (SC3D:CAM-LAYER-ASSIGN e vals)))
+              )
+            )
           )
 
           (setq recs '())
