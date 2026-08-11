@@ -1937,6 +1937,9 @@
 (setq *SC3D_CFG_FOLDER* "BricsCAD")
 (setq *SC3D_CFG_FILE* "camera.config")
 
+;; Couleur ACI des contours d'ajustement et des marquages de distance (30 = orange).
+(setq *SC3D_ACCENT_COL* 30)
+
 (setq *SC3D_SENSOR_LIST*
   '(
     "1/6"
@@ -2003,6 +2006,11 @@
 ;; geometrie elles-memes (voir section CLIPPING). nil = pas d'ajustement actif.
 (setq *SC3D_CLIP_POLY* nil)
 (setq *SC3D_CLIP_TRIS* nil)
+
+;; Mode aplatissement 2D : quand T, toute la geometrie du bloc est generee a Z = 0
+;; (voir SC3D:P / SC3D:PW). Positionne par SC3D:CREATE-BLOCK-GEOM(-SIDE) a partir
+;; de la configuration ('flat2d), jamais directement.
+(setq *SC3D_FLAT2D* nil)
 
 (defun SC3D:VIEW-LABEL->CODE (v)
   (if (= v "Vue de cote") "SIDE" "TOP")
@@ -2354,7 +2362,7 @@
   (if b "1" "0")
 )
 
-(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view useHatch hatchPat hatchCol hidden showDist cvname sit)
+(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view useHatch hatchPat hatchCol hidden showDist cvname sit flat)
   (setq manu     (cdr (assoc 'manu vals)))
   (setq model    (cdr (assoc 'model vals)))
   (setq fmt      (cdr (assoc 'fmt vals)))
@@ -2376,6 +2384,8 @@
   (setq showDist (if (assoc 'show_dist vals) (cdr (assoc 'show_dist vals)) T))
   (setq cvname   (cdr (assoc 'cvname vals)))
   (setq sit      (cdr (assoc 'situation vals)))
+  ;; Aplatissement 2D (absent = non aplati).
+  (setq flat     (cdr (assoc 'flat2d vals)))
 
   (if (null view)     (setq view "TOP"))
   (if (null hatchPat) (setq hatchPat "ANSI31"))
@@ -2405,7 +2415,8 @@
     (SC3D:BOOLSTR hidden) "|"
     (SC3D:BOOLSTR showDist) "|"
     (SC3D:CLEAN-NAME cvname) "|"
-    sit
+    sit "|"
+    (SC3D:BOOLSTR flat)
   )
 )
 
@@ -2437,6 +2448,8 @@
       ;; Nom du champ de vision et situation (anciennes configs = vide).
       (cons 'cvname (if (> (length p) 20) (nth 20 p) ""))
       (cons 'situation (if (> (length p) 21) (nth 21 p) ""))
+      ;; Aplatissement 2D (anciennes configs = non aplati).
+      (cons 'flat2d (if (> (length p) 22) (= (nth 22 p) "1") nil))
     )
     nil
   )
@@ -2875,7 +2888,7 @@
   (SC3D:LAYER "SC3D_RAYONS" 4)
   (SC3D:LAYER "SC3D_AXE" 7)
   (SC3D:LAYER "SC3D_TEXTES" 7)
-  (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
+  (SC3D:LAYER "SC3D_AJUSTEMENT" *SC3D_ACCENT_COL*)
   (SC3D:LAYER "SC3D_HACHURE" 3)
   (SC3D:LAYER "SC3D_NON_VISIBLE" 1)
   (SC3D:LAYER "SC3D_PPM_1500" 1)
@@ -3199,7 +3212,8 @@
 )
 
 (defun SC3D:P (x y z)
-  (list x y z)
+  ;; Point local du bloc. En mode aplati 2D, toute la geometrie est ramenee a Z = 0.
+  (list x y (if *SC3D_FLAT2D* 0.0 z))
 )
 
 (defun SC3D:PW (x y z / bx by bz ca sa)
@@ -3208,6 +3222,7 @@
   (setq bz (caddr *SC3D_BASE*))
   (setq ca *SC3D_CA*)
   (setq sa *SC3D_SA*)
+  (if *SC3D_FLAT2D* (setq z 0.0))
   (list
     (+ bx (- (* x ca) (* y sa)))
     (+ by (+ (* x sa) (* y ca)))
@@ -3240,14 +3255,14 @@
 )
 
 (defun SC3D:DRAW-CLIP-CONTOUR (poly / n i p1 p2)
-  ;; Trace le contour jaune du polygone d'ajustement courant, non decoupe par
+  ;; Trace le contour orange du polygone d'ajustement courant, non decoupe par
   ;; lui-meme, pour visualiser la limite de la decoupe sur le bloc camera.
   (setq n (length poly))
   (setq i 0)
   (while (< i n)
     (setq p1 (SC3D:P (car (nth i poly)) (cadr (nth i poly)) 0.0))
     (setq p2 (SC3D:P (car (nth (rem (+ i 1) n) poly)) (cadr (nth (rem (+ i 1) n) poly)) 0.0))
-    (SC3D:LINE-RAW p1 p2 "SC3D_AJUSTEMENT" 2)
+    (SC3D:LINE-RAW p1 p2 "SC3D_AJUSTEMENT" *SC3D_ACCENT_COL*)
     (setq i (+ i 1))
   )
 )
@@ -3482,8 +3497,8 @@
 (defun SC3D:DRAW-DIST-LABELS (maxD / d)
   (setq d 5.0)
   (while (<= d maxD)
-    (SC3D:LINE (SC3D:P d -0.25 0.02) (SC3D:P d 0.25 0.02) "SC3D_TEXTES" 2)
-    (SC3D:TEXT-LOCAL (SC3D:P d 0.55 0.05) 0.25 (strcat (rtos d 2 0) "m") "SC3D_TEXTES" 2 0.0)
+    (SC3D:LINE (SC3D:P d -0.25 0.02) (SC3D:P d 0.25 0.02) "SC3D_TEXTES" *SC3D_ACCENT_COL*)
+    (SC3D:TEXT-LOCAL (SC3D:P d 0.55 0.05) 0.25 (strcat (rtos d 2 0) "m") "SC3D_TEXTES" *SC3D_ACCENT_COL* 0.0)
     (setq d (+ d 5.0))
   )
 )
@@ -3841,6 +3856,9 @@
   ;; Absent (anciennes configs) = affiche par defaut.
   (setq showDist (if (assoc 'show_dist vals) (cdr (assoc 'show_dist vals)) T))
 
+  ;; Mode aplati 2D : toute la geometrie ci-dessous sera generee a Z = 0.
+  (setq *SC3D_FLAT2D* (cdr (assoc 'flat2d vals)))
+
   (if (null hatchPat) (setq hatchPat "ANSI31"))
   (if (null hatchCol) (setq hatchCol 1))
 
@@ -3907,6 +3925,7 @@
   )
 
   (entmake '((0 . "ENDBLK")))
+  (setq *SC3D_FLAT2D* nil)
 )
 
 ;; ------------------------------------------------------------------------------------
@@ -4060,7 +4079,7 @@
   (while (<= d maxD)
     (SC3D:LINE (SC3D:SIDE-P d -0.12) (SC3D:SIDE-P d 0.12) "SC3D_AXE" 7)
     (if (or (= d 0.0) (= (rem (fix d) 5) 0))
-      (SC3D:TEXT-LOCAL (SC3D:SIDE-P d -0.45) 0.25 (rtos d 2 0) "SC3D_TEXTES" 2 0.0)
+      (SC3D:TEXT-LOCAL (SC3D:SIDE-P d -0.45) 0.25 (rtos d 2 0) "SC3D_TEXTES" *SC3D_ACCENT_COL* 0.0)
     )
     (setq d (+ d 1.0))
   )
@@ -4092,7 +4111,7 @@
   (SC3D:LINE (SC3D:SIDE-P maxD (- objH 0.12)) (SC3D:SIDE-P maxD (+ objH 0.12)) "SC3D_TEXTES" 30)
 
   (setq angleDeg (SC3D:RTD tilt))
-  (SC3D:TEXT-LOCAL (SC3D:SIDE-P 0.65 (+ camH 0.45)) 0.25 (strcat (rtos angleDeg 2 1) "°") "SC3D_TEXTES" 2 0.0)
+  (SC3D:TEXT-LOCAL (SC3D:SIDE-P 0.65 (+ camH 0.45)) 0.25 (strcat (rtos angleDeg 2 1) "\U+00B0") "SC3D_TEXTES" 2 0.0)
 )
 
 (defun SC3D:CREATE-BLOCK-GEOM-SIDE (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD vHalf hidden showDist)
@@ -4111,6 +4130,10 @@
   (setq hidden   (cdr (assoc 'hidden vals)))
   ;; Absent (anciennes configs) = affiche par defaut.
   (setq showDist (if (assoc 'show_dist vals) (cdr (assoc 'show_dist vals)) T))
+
+  ;; Mode aplati 2D : la vue de cote est deja a Z = 0, le drapeau est sans effet
+  ;; visuel ici mais on le positionne quand meme par coherence.
+  (setq *SC3D_FLAT2D* (cdr (assoc 'flat2d vals)))
 
   (if (< trans 0.0) (setq trans 0.0))
   (if (> trans 90.0) (setq trans 90.0))
@@ -4164,6 +4187,7 @@
   )
 
   (entmake '((0 . "ENDBLK")))
+  (setq *SC3D_FLAT2D* nil)
 )
 
 (defun SC3D:DELETE-TEXT-HANDLE (vals / h e)
@@ -4444,7 +4468,31 @@
   (SC3D:RTD (SC3D:UCS-ANG->WCS (if a a 0.0)))
 )
 
-(defun SC3D:CMD-CREER (/ vals base rot)
+(defun SC3D:ASK-FLATTEN (ins / choix)
+  ;; Une fois le champ de vision genere, propose de l'aplatir en 2D (toute la
+  ;; geometrie du bloc ramenee a Z = 0). Reponse par defaut : Oui.
+  ;; L'etat est memorise dans le xdata ('flat2d) et donc conserve par
+  ;; Modifier / Visibilite / Ajuster.
+  (if ins
+    (progn
+      (initget "Oui Non")
+      (setq choix (getkword "\nAplatir le champ de vision en 2D ? [Oui/Non] <Oui> : "))
+      (if (or (null choix) (= choix "Oui"))
+        (progn
+          (if (SC3D:SET-CAMERA-FLAT ins T)
+            (progn
+              (command "_.REGEN")
+              (princ "\nChamp de vision aplati en 2D (Z = 0).")
+            )
+            (princ "\nImpossible d'aplatir ce champ de vision.")
+          )
+        )
+      )
+    )
+  )
+)
+
+(defun SC3D:CMD-CREER (/ vals base rot ins)
   (setq vals (SC3D:DIALOG nil))
 
   (if vals
@@ -4458,7 +4506,10 @@
         (setq base '(0.0 0.0 0.0))
       )
 
-      (SC3D:CREATE-CAMERA-AUTO base vals)
+      (setq ins (SC3D:CREATE-CAMERA-AUTO base vals))
+
+      ;; Champ de vision genere : proposer de l'aplatir en 2D (Oui par defaut).
+      (SC3D:ASK-FLATTEN ins)
     )
   )
 
@@ -4509,6 +4560,8 @@
                   ;; Conserver l'etat masque/affiche existant : sinon "Modifier" ferait
                   ;; reapparaitre une camera masquee via l'outil Visibilite.
                   (setq newVals (SC3D:SETVAL newVals 'hidden (cdr (assoc 'hidden oldVals))))
+                  ;; Conserver aussi l'etat aplati 2D existant.
+                  (setq newVals (SC3D:SETVAL newVals 'flat2d (cdr (assoc 'flat2d oldVals))))
                   ;; Recuperer l'ajustement (polygone de decoupe) existant avant de
                   ;; detruire le bloc, pour le reappliquer sur le nouveau bloc cree :
                   ;; sinon "Modifier" fait disparaitre l'ajustement en place.
@@ -4864,7 +4917,7 @@
       (list
         '(0 . "LINE")
         (cons 8 "SC3D_AJUSTEMENT")
-        (cons 62 2)
+        (cons 62 *SC3D_ACCENT_COL*)
         (cons 10 p1)
         (cons 11 p2)
       )
@@ -4885,7 +4938,7 @@
 )
 
 (defun SC3D:GET-POLY-POINTS (/ pts pt tempEnts closeEnt olderr result finished)
-  (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
+  (SC3D:LAYER "SC3D_AJUSTEMENT" *SC3D_ACCENT_COL*)
 
   (setq pts '())
   (setq tempEnts '())
@@ -4991,7 +5044,7 @@
     )
   )
 
-  ;; Les lignes jaunes ne servent que d'aide au trace.
+  ;; Les lignes oranges ne servent que d'aide au trace.
   ;; L'ajustement final est ensuite applique par le decoupage geometrique custom.
   (if closeEnt
     (SC3D:TEMP-DELETE (list closeEnt))
@@ -5122,7 +5175,7 @@
 (defun SC3D:APPLY-CLIP (e active localPts / ed blockName cfg vals calc view)
   ;; Regenere la geometrie du bloc camera (meme nom de bloc = redefinition en
   ;; place) avec ou sans decoupe par localPts, sans jamais appeler XCLIP.
-  (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
+  (SC3D:LAYER "SC3D_AJUSTEMENT" *SC3D_ACCENT_COL*)
   (setq ed (entget e))
   (setq blockName (cdr (assoc 2 ed)))
   (setq cfg (SC3D:GET-XDATA e))
@@ -5210,6 +5263,25 @@
     nil
     (progn
       (setq vals (SC3D:SETVAL vals 'hidden hidden))
+      (setq texth (cdr (assoc 'texth vals)))
+      (setq newCfg (SC3D:CFG-STR vals (if texth texth "")))
+      (SC3D:SET-XDATA e newCfg)
+      (SC3D:REGEN-CAMERA-GEOM e)
+    )
+  )
+)
+
+(defun SC3D:SET-CAMERA-FLAT (e flat / cfg vals texth newCfg)
+  ;; Active / desactive l'aplatissement 2D d'un bloc camera : l'etat est stocke
+  ;; dans le xdata ('flat2d) puis la geometrie du bloc est regeneree en place
+  ;; (a Z = 0 si flat = T). L'ajustement existant est conserve.
+  (setq cfg (SC3D:GET-XDATA e))
+  (setq vals (if cfg (SC3D:CFG-VALS cfg) nil))
+
+  (if (not vals)
+    nil
+    (progn
+      (setq vals (SC3D:SETVAL vals 'flat2d flat))
       (setq texth (cdr (assoc 'texth vals)))
       (setq newCfg (SC3D:CFG-STR vals (if texth texth "")))
       (SC3D:SET-XDATA e newCfg)
@@ -5385,12 +5457,17 @@
           (setq *SC3D_CA* (cos rot))
           (setq *SC3D_SA* (sin rot))
 
+          ;; En mode aplati, le texte est lui aussi place a Z = 0.
+          (setq *SC3D_FLAT2D* (cdr (assoc 'flat2d vals)))
+
           (setq txtPt
             (if (= view "SIDE")
               (SC3D:PW 0.45 (+ (cdr (assoc 'camh vals)) 0.85) 0.0)
               (SC3D:PW 0.45 -0.75 0.45)
             )
           )
+
+          (setq *SC3D_FLAT2D* nil)
 
           (setq txt
             (SC3D:TEXT-WORLD
@@ -5939,16 +6016,47 @@
 )
 
 (defun SC3D:MENU-CAMERA (/ choix)
-  (initget "C M L J A S T V E")
+  (initget "C M L J A S T V E P")
   (setq choix
     (getkword
-      "\nCamera - action [Creer/Modifier/caLculer/aJuster/Ajouter/Supprimer/Texte/Visibilite/Exporter] <C> : "
+      "\nCamera - action [Creer/Modifier/caLculer/aJuster/Ajouter/Supprimer/Texte/Visibilite/Exporter/aPlatir] <C> : "
     )
   )
   (if (null choix)
     (setq choix "C")
   )
   choix
+)
+
+(defun SC3D:CMD-APLATIR (/ ents choix flat n)
+  ;; Aplatit (ou retablit en 3D) un ou plusieurs blocs camera existants.
+  (setq ents (SC3D:SELECT-CAMERA-BLOCKS "\nSelectionner un ou plusieurs blocs camera : "))
+
+  (if (not ents)
+    (princ "\nAucun bloc camera selectionne.")
+    (progn
+      (initget "2d 3d")
+      (setq choix (getkword "\nGeometrie [2d/3d] <2d> : "))
+      (if (null choix) (setq choix "2d"))
+      (setq flat (= choix "2d"))
+
+      (setq n 0)
+      (foreach e ents
+        (if (SC3D:SET-CAMERA-FLAT e flat)
+          (setq n (+ n 1))
+        )
+      )
+
+      (command "_.REGEN")
+
+      (if flat
+        (princ (strcat "\n" (itoa n) " camera(s) aplatie(s) en 2D (Z = 0)."))
+        (princ (strcat "\n" (itoa n) " camera(s) retablie(s) en 3D."))
+      )
+    )
+  )
+
+  (princ)
 )
 
 (defun c:S_CAMERA (/ choix)
@@ -5981,6 +6089,9 @@
     )
     ((= choix "E")
       (SC3D:CMD-EXPORT)
+    )
+    ((= choix "P")
+      (SC3D:CMD-APLATIR)
     )
   )
 
