@@ -2827,6 +2827,22 @@
   )
 )
 
+(defun SC3D:LAYER-SET-NOPLOT (name / e ed)
+  ;; Le calque existe (cree par SC3D:LAYER) : on force juste son flag Plot a 0
+  ;; pour que son contenu reste visible a l'ecran mais disparaisse a l'impression.
+  (setq e (tblobjname "LAYER" name))
+  (if e
+    (progn
+      (setq ed (entget e))
+      (if (assoc 290 ed)
+        (setq ed (subst (cons 290 0) (assoc 290 ed) ed))
+        (setq ed (append ed (list (cons 290 0))))
+      )
+      (entmod ed)
+    )
+  )
+)
+
 (defun SC3D:SAFE-LAYER-NAME (s / bad)
   ;; Nettoie un nom pour pouvoir l'utiliser comme nom de calque.
   (if (or (null s) (= s ""))
@@ -2890,6 +2906,9 @@
   (SC3D:LAYER "SC3D_PPM_20" 5)
   (SC3D:LAYER "SC3D_PPM_12" 5)
   (SC3D:LAYER "SC3D_PPM_2" 9)
+  ;; Contours des polygones de zones PPM : visibles a l'ecran, jamais imprimes.
+  (SC3D:LAYER "SC3D_PPM_CONTOUR" 8)
+  (SC3D:LAYER-SET-NOPLOT "SC3D_PPM_CONTOUR")
 )
 
 ;; ------------------------------------------------------------------------------------
@@ -3240,14 +3259,14 @@
 )
 
 (defun SC3D:DRAW-CLIP-CONTOUR (poly / n i p1 p2)
-  ;; Trace le contour jaune du polygone d'ajustement courant, non decoupe par
+  ;; Trace le contour orange du polygone d'ajustement courant, non decoupe par
   ;; lui-meme, pour visualiser la limite de la decoupe sur le bloc camera.
   (setq n (length poly))
   (setq i 0)
   (while (< i n)
     (setq p1 (SC3D:P (car (nth i poly)) (cadr (nth i poly)) 0.0))
     (setq p2 (SC3D:P (car (nth (rem (+ i 1) n) poly)) (cadr (nth (rem (+ i 1) n) poly)) 0.0))
-    (SC3D:LINE-RAW p1 p2 "SC3D_AJUSTEMENT" 2)
+    (SC3D:LINE-RAW p1 p2 "SC3D_AJUSTEMENT" 30)
     (setq i (+ i 1))
   )
 )
@@ -3379,7 +3398,11 @@
   )
 )
 
-(defun SC3D:GROUND-BAND (x1 x2 maxD tanH tilt camH objH lay aci rgb trans / w1 w2 p1 p2 p3 p4 e1 e2 e3 e4)
+(defun SC3D:GROUND-BAND (x1 x2 maxD tanH tilt camH objH lay aci rgb trans edgeLay / w1 w2 p1 p2 p3 p4 e1 e2 e3 e4)
+  ;; edgeLay : calque du contour du polygone (nil = meme calque que le remplissage,
+  ;; comportement d'origine). Passer un calque non-imprimable pour les zones PPM,
+  ;; dont le contour ne doit pas apparaitre a l'impression.
+  (if (null edgeLay) (setq edgeLay lay))
   (if (> x2 x1)
     (progn
       (setq w1 (SC3D:CONE-HALF-WIDTH x1 maxD tanH tilt camH objH))
@@ -3397,10 +3420,10 @@
 
       (SC3D:ZONE-SOLID p1 p2 p3 p4 lay aci rgb trans)
 
-      (SC3D:LINE e1 e2 lay aci)
-      (SC3D:LINE e2 e3 lay aci)
-      (SC3D:LINE e3 e4 lay aci)
-      (SC3D:LINE e4 e1 lay aci)
+      (SC3D:LINE e1 e2 edgeLay aci)
+      (SC3D:LINE e2 e3 edgeLay aci)
+      (SC3D:LINE e3 e4 edgeLay aci)
+      (SC3D:LINE e4 e1 edgeLay aci)
     )
   )
 )
@@ -3482,8 +3505,8 @@
 (defun SC3D:DRAW-DIST-LABELS (maxD / d)
   (setq d 5.0)
   (while (<= d maxD)
-    (SC3D:LINE (SC3D:P d -0.25 0.02) (SC3D:P d 0.25 0.02) "SC3D_TEXTES" 2)
-    (SC3D:TEXT-LOCAL (SC3D:P d 0.55 0.05) 0.25 (strcat (rtos d 2 0) "m") "SC3D_TEXTES" 2 0.0)
+    (SC3D:LINE (SC3D:P d -0.25 0.02) (SC3D:P d 0.25 0.02) "SC3D_TEXTES" 30)
+    (SC3D:TEXT-LOCAL (SC3D:P d 0.55 0.05) 0.25 (strcat (rtos d 2 0) "m") "SC3D_TEXTES" 30 0.0)
     (setq d (+ d 5.0))
   )
 )
@@ -3625,7 +3648,7 @@
         (setq x2 (SC3D:MIN d maxD))
 
         (if (> x2 x1)
-          (SC3D:GROUND-BAND x1 x2 maxD tanH tilt camH objH lay aci rgb trans)
+          (SC3D:GROUND-BAND x1 x2 maxD tanH tilt camH objH lay aci rgb trans "SC3D_PPM_CONTOUR")
         )
 
         (if (and (> d nearD) (<= d maxD))
@@ -3864,6 +3887,7 @@
         1
         (SC3D:RGB 120 0 0)
         trans
+        nil
       )
     )
     (progn
@@ -3880,6 +3904,7 @@
           1
           (SC3D:RGB 120 0 0)
           trans
+          nil
         )
       )
 
@@ -3936,7 +3961,11 @@
   (SC3D:P x y 0.0)
 )
 
-(defun SC3D:SIDE-BAND (x1 x2 h lay aci rgb trans / p1 p2 p3 p4)
+(defun SC3D:SIDE-BAND (x1 x2 h lay aci rgb trans edgeLay / p1 p2 p3 p4)
+  ;; edgeLay : calque du contour du polygone (nil = meme calque que le remplissage,
+  ;; comportement d'origine). Passer un calque non-imprimable pour les zones PPM,
+  ;; dont le contour ne doit pas apparaitre a l'impression.
+  (if (null edgeLay) (setq edgeLay lay))
   (if (< x1 0.0) (setq x1 0.0))
   (if (< x2 0.0) (setq x2 0.0))
   (if (< h 0.0) (setq h 0.0))
@@ -3949,10 +3978,10 @@
       (setq p4 (SC3D:SIDE-P x1 h))
 
       (SC3D:ZONE-SOLID p1 p2 p3 p4 lay aci rgb trans)
-      (SC3D:LINE p1 p2 lay aci)
-      (SC3D:LINE p2 p3 lay aci)
-      (SC3D:LINE p3 p4 lay aci)
-      (SC3D:LINE p4 p1 lay aci)
+      (SC3D:LINE p1 p2 edgeLay aci)
+      (SC3D:LINE p2 p3 edgeLay aci)
+      (SC3D:LINE p3 p4 edgeLay aci)
+      (SC3D:LINE p4 p1 edgeLay aci)
     )
   )
 )
@@ -3974,7 +4003,7 @@
         (setq x2 (SC3D:MIN d maxD))
 
         (if (> x2 x1)
-          (SC3D:SIDE-BAND x1 x2 objH lay aci rgb trans)
+          (SC3D:SIDE-BAND x1 x2 objH lay aci rgb trans "SC3D_PPM_CONTOUR")
         )
 
         (if (>= d maxD)
@@ -4060,7 +4089,7 @@
   (while (<= d maxD)
     (SC3D:LINE (SC3D:SIDE-P d -0.12) (SC3D:SIDE-P d 0.12) "SC3D_AXE" 7)
     (if (or (= d 0.0) (= (rem (fix d) 5) 0))
-      (SC3D:TEXT-LOCAL (SC3D:SIDE-P d -0.45) 0.25 (rtos d 2 0) "SC3D_TEXTES" 2 0.0)
+      (SC3D:TEXT-LOCAL (SC3D:SIDE-P d -0.45) 0.25 (rtos d 2 0) "SC3D_TEXTES" 30 0.0)
     )
     (setq d (+ d 1.0))
   )
@@ -4128,6 +4157,7 @@
         1
         (SC3D:RGB 120 0 0)
         trans
+        nil
       )
     )
     (progn
@@ -4140,6 +4170,7 @@
           1
           (SC3D:RGB 120 0 0)
           trans
+          nil
         )
       )
 
