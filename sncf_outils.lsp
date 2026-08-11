@@ -2875,7 +2875,7 @@
   (SC3D:LAYER "SC3D_RAYONS" 4)
   (SC3D:LAYER "SC3D_AXE" 7)
   (SC3D:LAYER "SC3D_TEXTES" 7)
-  (SC3D:LAYER "SC3D_AJUSTEMENT" 30)
+  (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
   (SC3D:LAYER "SC3D_HACHURE" 3)
   (SC3D:LAYER "SC3D_NON_VISIBLE" 1)
   (SC3D:LAYER "SC3D_PPM_1500" 1)
@@ -3240,14 +3240,14 @@
 )
 
 (defun SC3D:DRAW-CLIP-CONTOUR (poly / n i p1 p2)
-  ;; Trace le contour orange du polygone d'ajustement courant, non decoupe par
+  ;; Trace le contour jaune du polygone d'ajustement courant, non decoupe par
   ;; lui-meme, pour visualiser la limite de la decoupe sur le bloc camera.
   (setq n (length poly))
   (setq i 0)
   (while (< i n)
     (setq p1 (SC3D:P (car (nth i poly)) (cadr (nth i poly)) 0.0))
     (setq p2 (SC3D:P (car (nth (rem (+ i 1) n) poly)) (cadr (nth (rem (+ i 1) n) poly)) 0.0))
-    (SC3D:LINE-RAW p1 p2 "SC3D_AJUSTEMENT" 30)
+    (SC3D:LINE-RAW p1 p2 "SC3D_AJUSTEMENT" 2)
     (setq i (+ i 1))
   )
 )
@@ -3482,8 +3482,8 @@
 (defun SC3D:DRAW-DIST-LABELS (maxD / d)
   (setq d 5.0)
   (while (<= d maxD)
-    (SC3D:LINE (SC3D:P d -0.25 0.02) (SC3D:P d 0.25 0.02) "SC3D_TEXTES" 30)
-    (SC3D:TEXT-LOCAL (SC3D:P d 0.55 0.05) 0.25 (strcat (rtos d 2 0) "m") "SC3D_TEXTES" 30 0.0)
+    (SC3D:LINE (SC3D:P d -0.25 0.02) (SC3D:P d 0.25 0.02) "SC3D_TEXTES" 2)
+    (SC3D:TEXT-LOCAL (SC3D:P d 0.55 0.05) 0.25 (strcat (rtos d 2 0) "m") "SC3D_TEXTES" 2 0.0)
     (setq d (+ d 5.0))
   )
 )
@@ -4060,7 +4060,7 @@
   (while (<= d maxD)
     (SC3D:LINE (SC3D:SIDE-P d -0.12) (SC3D:SIDE-P d 0.12) "SC3D_AXE" 7)
     (if (or (= d 0.0) (= (rem (fix d) 5) 0))
-      (SC3D:TEXT-LOCAL (SC3D:SIDE-P d -0.45) 0.25 (rtos d 2 0) "SC3D_TEXTES" 30 0.0)
+      (SC3D:TEXT-LOCAL (SC3D:SIDE-P d -0.45) 0.25 (rtos d 2 0) "SC3D_TEXTES" 2 0.0)
     )
     (setq d (+ d 1.0))
   )
@@ -4864,7 +4864,7 @@
       (list
         '(0 . "LINE")
         (cons 8 "SC3D_AJUSTEMENT")
-        (cons 62 30)
+        (cons 62 2)
         (cons 10 p1)
         (cons 11 p2)
       )
@@ -4885,7 +4885,7 @@
 )
 
 (defun SC3D:GET-POLY-POINTS (/ pts pt tempEnts closeEnt olderr result finished)
-  (SC3D:LAYER "SC3D_AJUSTEMENT" 30)
+  (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
 
   (setq pts '())
   (setq tempEnts '())
@@ -5122,7 +5122,7 @@
 (defun SC3D:APPLY-CLIP (e active localPts / ed blockName cfg vals calc view)
   ;; Regenere la geometrie du bloc camera (meme nom de bloc = redefinition en
   ;; place) avec ou sans decoupe par localPts, sans jamais appeler XCLIP.
-  (SC3D:LAYER "SC3D_AJUSTEMENT" 30)
+  (SC3D:LAYER "SC3D_AJUSTEMENT" 2)
   (setq ed (entget e))
   (setq blockName (cdr (assoc 2 ed)))
   (setq cfg (SC3D:GET-XDATA e))
