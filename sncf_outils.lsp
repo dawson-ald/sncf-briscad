@@ -5782,6 +5782,41 @@
   (member (strcase name) (mapcar 'strcase (layoutlist)))
 )
 
+(defun SC3D:DELETE-EXPORT-LAYOUTS (/ doc names nm layObj ent r count)
+  ;; Supprime toutes les presentations generees par un export precedent
+  ;; (reperees par le xdata pose sur chacune a sa creation, cf.
+  ;; SC3D:EXPORT-MAKE-LAYOUT) : les presentations propres a l'utilisateur, non
+  ;; marquees, restent intactes.
+  ;; NB : LAYOUT n'est pas une table classique (LAYER, STYLE, BLOCK...), donc
+  ;; pas de tblobjname possible : on passe par la collection Layouts (VLA) pour
+  ;; recuperer l'ename de chaque presentation.
+  (setq doc (SC3D:ACAD-DOC))
+  (if (/= (getvar "CTAB") "Model") (setvar "CTAB" "Model"))
+  (setq count 0)
+  (setq names (layoutlist))
+  (foreach nm names
+    (if (/= (strcase nm) "MODEL")
+      (progn
+        (setq layObj (vl-catch-all-apply 'vla-Item (list (vla-get-Layouts doc) nm)))
+        (if (not (vl-catch-all-error-p layObj))
+          (progn
+            (setq ent (vlax-vla-object->ename layObj))
+            (if (and ent (SC3D:GET-XDATA ent))
+              (progn
+                (setq r (vl-catch-all-apply 'vla-Delete (list layObj)))
+                (if (not (vl-catch-all-error-p r))
+                  (setq count (+ count 1))
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+  count
+)
+
 (defun SC3D:SAFE-LAYOUT-NAME (s / bad)
   (if (or (null s) (= s "")) (setq s "CV"))
   (setq bad '("<" ">" "/" "\\" "\"" ":" ";" "?" "*" "|" "," "=" "`"))
@@ -5992,6 +6027,11 @@
   (setq name (SC3D:UNIQUE-LAYOUT-NAME baseName))
   (setq layout (vla-Add (vla-get-Layouts doc) name))
 
+  ;; Marque cette presentation comme generee par l'export, pour pouvoir la
+  ;; reconnaitre et la supprimer automatiquement lors d'un export ulterieur
+  ;; (cf. SC3D:DELETE-EXPORT-LAYOUTS).
+  (SC3D:SET-XDATA (vlax-vla-object->ename layout) "1")
+
   ;; L'activation de la presentation peut creer la fenetre par defaut : on la supprime.
   (setvar "CTAB" name)
   (SC3D:DELETE-LAYOUT-VIEWPORTS name)
@@ -6111,7 +6151,7 @@
   (SC3D:EXPORT-MAKE-LAYOUT base legendBox rec nil camMrg)
 )
 
-(defun SC3D:CMD-EXPORT (/ selEnts allEnts recs r e p1 p2 w1 w2 legendBox pct camMrg groups key grp lst existR projR curtab cfg vals)
+(defun SC3D:CMD-EXPORT (/ selEnts allEnts recs r e p1 p2 w1 w2 legendBox pct camMrg groups key grp lst existR projR curtab cfg vals delChoix delCount)
   (setq curtab (getvar "CTAB"))
   (if (/= curtab "Model")
     (princ "\nExport a lancer depuis l'espace objet (Model).")
@@ -6160,6 +6200,20 @@
           (if (< pct 0.0) (setq pct 0.0))
           (setq *SC3D_EXPORT_ZOOM* pct)
           (setq camMrg (/ pct 200.0))
+
+          ;; Nettoyage optionnel des presentations d'un export precedent (reperees
+          ;; par leur xdata, cf. SC3D:DELETE-EXPORT-LAYOUTS) : les presentations
+          ;; propres a l'utilisateur ne sont jamais touchees.
+          (initget "Oui Non")
+          (setq delChoix
+            (getkword "\nSupprimer les presentations d'un export precedent ? [Oui/Non] <Non> : ")
+          )
+          (if (= delChoix "Oui")
+            (progn
+              (setq delCount (SC3D:DELETE-EXPORT-LAYOUTS))
+              (princ (strcat "\n" (itoa delCount) " presentation(s) supprimee(s)."))
+            )
+          )
 
           ;; Toutes les cameras du dessin (selectionnees ou non) recoivent leur propre
           ;; calque (nom du champ de vision + situation, ou SC3D_CV_<handle> si le
