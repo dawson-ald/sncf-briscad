@@ -6067,7 +6067,7 @@
   ;; Sous la fenetre : modele, capteur, focale, definition et angle de la camera.
   (setq evVals (cdr (assoc 'vals existRec)))
   (if evVals
-    (SC3D:PS-TEXT layout (* 1.5 cw) infoY 3.0 (SC3D:CAM-INFO-TEXT evVals))
+    (SC3D:PS-TEXT layout (* 1.5 cw) infoY 2.75 (SC3D:CAM-INFO-TEXT evVals))
   )
 
   ;; Volet 3 : situation projetee, cadree sur SON emprise, a l'endroit ou elle est
@@ -6085,7 +6085,7 @@
       )
       (setq pvVals (cdr (assoc 'vals projRec)))
       (if pvVals
-        (SC3D:PS-TEXT layout (* 2.5 cw) infoY 3.0 (SC3D:CAM-INFO-TEXT pvVals))
+        (SC3D:PS-TEXT layout (* 2.5 cw) infoY 2.75 (SC3D:CAM-INFO-TEXT pvVals))
       )
     )
   )
