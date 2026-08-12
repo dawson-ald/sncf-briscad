@@ -4322,14 +4322,16 @@
   )
 )
 
-(defun SC3D:CAM-INFO-TEXT (vals / manu model calc hAng vAng base)
+(defun SC3D:CAM-INFO-TEXT (vals / manu model calc hAng vAng tiltDeg base)
   ;; Texte d'export (sous la fenetre existante/projetee) : modele - capteur /
-  ;; focale / definition / angle H / angle V, sur une seule ligne.
+  ;; focale / definition / angle H / angle V / inclinaison (axe Y, meme angle
+  ;; que celui affiche sur la vue de cote), sur une seule ligne.
   (setq manu (cdr (assoc 'manu vals)))
   (setq model (cdr (assoc 'model vals)))
   (setq calc (SC3D:CALC vals))
   (setq hAng (cdr (assoc 'hAng calc)))
   (setq vAng (cdr (assoc 'vAng calc)))
+  (setq tiltDeg (SC3D:RTD (cdr (assoc 'tilt calc))))
 
   (setq base
     (strcat
@@ -4342,6 +4344,8 @@
       (rtos hAng 2 1)
       "° / V "
       (rtos vAng 2 1)
+      "° / Incl "
+      (rtos tiltDeg 2 1)
       "°"
     )
   )
