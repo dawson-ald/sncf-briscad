@@ -4322,6 +4322,35 @@
   )
 )
 
+(defun SC3D:CAM-INFO-TEXT (vals / manu model view calc ang base)
+  ;; Texte d'export (sous la fenetre existante/projetee) : modele - capteur /
+  ;; focale / definition / angle (horizontal en vue du dessus, vertical en vue
+  ;; de cote), sur une seule ligne.
+  (setq manu (cdr (assoc 'manu vals)))
+  (setq model (cdr (assoc 'model vals)))
+  (setq view (cdr (assoc 'view vals)))
+  (setq calc (SC3D:CALC vals))
+  (setq ang (if (= view "SIDE") (cdr (assoc 'vAng calc)) (cdr (assoc 'hAng calc))))
+
+  (setq base
+    (strcat
+      (cdr (assoc 'fmt vals))
+      " / "
+      (rtos (cdr (assoc 'focal vals)) 2 1)
+      "mm / "
+      (SC3D:RES-BASIC (cdr (assoc 'res vals)))
+      " / "
+      (rtos ang 2 1)
+      "°"
+    )
+  )
+
+  (if (and manu model (/= manu "Manuel") (/= model "Manuel"))
+    (strcat manu " " model " - " base)
+    base
+  )
+)
+
 (defun SC3D:CREATE-CAMERA (base vals / calc blockName ins cfg rot camLayer)
   (setq vals (SC3D:SETVAL vals 'view "TOP"))
   (SC3D:SETUP-LAYERS)
@@ -5737,6 +5766,7 @@
         (cons 'sit (if (cdr (assoc 'situation vals)) (cdr (assoc 'situation vals)) ""))
         (cons 'bmin (car bb))
         (cons 'bmax (cadr bb))
+        (cons 'vals vals)
       )
     )
     nil
@@ -5945,7 +5975,7 @@
   (SC3D:PS-RECT layout (* 2.0 cw) 0.0 (* 3.0 cw) uh)
 )
 
-(defun SC3D:EXPORT-MAKE-LAYOUT (baseName legendBox existRec projRec camMrg / doc name layout uw uh cw vpW vpH midY titY sitE lblE lw lh k lvW lvH)
+(defun SC3D:EXPORT-MAKE-LAYOUT (baseName legendBox existRec projRec camMrg / doc name layout uw uh cw vpW vpH midY titY infoY sitE lblE lw lh k lvW lvH evVals pvVals)
   ;; Cree une presentation en 3 volets, ENTIEREMENT dans la zone imprimable
   ;; (papier 630 x 297 paysage, marges 13 mm -> zone utile 604 x 271 ; l'origine
   ;; (0,0) de l'espace papier correspond au coin de cette zone) :
@@ -5977,6 +6007,7 @@
   (setq vpH (- uh (* 2.0 *SC3D_VP_MARGIN*) 8.0))
   (setq midY (+ *SC3D_VP_MARGIN* (/ vpH 2.0)))
   (setq titY (- uh 6.0))
+  (setq infoY (/ *SC3D_VP_MARGIN* 2.0))
 
   ;; Titres des volets, dans la bande superieure de la zone imprimable.
   (setq sitE (cdr (assoc 'sit existRec)))
@@ -6028,17 +6059,29 @@
     T
   )
 
+  ;; Sous la fenetre : modele, capteur, focale, definition et angle de la camera.
+  (setq evVals (cdr (assoc 'vals existRec)))
+  (if evVals
+    (SC3D:PS-TEXT layout (* 1.5 cw) infoY 3.0 (SC3D:CAM-INFO-TEXT evVals))
+  )
+
   ;; Volet 3 : situation projetee, cadree sur SON emprise, a l'endroit ou elle est
   ;; dans le dessin : seul le calque de la projetee reste degele (l'existante et
   ;; toutes les autres cameras sont cachees dans cette fenetre).
   (if projRec
-    (SC3D:ADD-VIEWPORT layout
-      (* 2.5 cw) midY
-      vpW vpH
-      (cdr (assoc 'bmin projRec)) (cdr (assoc 'bmax projRec))
-      camMrg
-      (cdr (assoc 'lay projRec))
-      T
+    (progn
+      (SC3D:ADD-VIEWPORT layout
+        (* 2.5 cw) midY
+        vpW vpH
+        (cdr (assoc 'bmin projRec)) (cdr (assoc 'bmax projRec))
+        camMrg
+        (cdr (assoc 'lay projRec))
+        T
+      )
+      (setq pvVals (cdr (assoc 'vals projRec)))
+      (if pvVals
+        (SC3D:PS-TEXT layout (* 2.5 cw) infoY 3.0 (SC3D:CAM-INFO-TEXT pvVals))
+      )
     )
   )
 
