@@ -2812,10 +2812,8 @@
   )
 )
 
-(defun SC3D:LAYER (name color rgb / ed)
+(defun SC3D:LAYER (name color / ed)
   ;; Creation / mise a jour du calque sans passer par la commande -LAYER.
-  ;; rgb (optionnel) : couleur vraie (420) portee par le calque, pour que les
-  ;; entites dessinees ByLayer (62 = 256) affichent la teinte exacte voulue.
   (if (tblsearch "LAYER" name)
     (progn
       (setq ed (entget (tblobjname "LAYER" name)))
@@ -2823,28 +2821,29 @@
         (setq ed (subst (cons 62 color) (assoc 62 ed) ed))
         (setq ed (append ed (list (cons 62 color))))
       )
-      (if rgb
-        (if (assoc 420 ed)
-          (setq ed (subst (cons 420 rgb) (assoc 420 ed) ed))
-          (setq ed (append ed (list (cons 420 rgb))))
-        )
-      )
       (entmod ed)
     )
     (entmake
-      (append
-        (list
-          '(0 . "LAYER")
-          '(100 . "AcDbSymbolTableRecord")
-          '(100 . "AcDbLayerTableRecord")
-          (cons 2 name)
-          '(70 . 0)
-          (cons 62 color)
-        )
-        (if rgb (list (cons 420 rgb)) nil)
-        (list '(6 . "Continuous"))
+      (list
+        '(0 . "LAYER")
+        '(100 . "AcDbSymbolTableRecord")
+        '(100 . "AcDbLayerTableRecord")
+        (cons 2 name)
+        '(70 . 0)
+        (cons 62 color)
+        '(6 . "Continuous")
       )
     )
+  )
+)
+
+(defun SC3D:LAYER-ENSURE (name color)
+  ;; Comme SC3D:LAYER, mais ne touche pas la couleur d'un calque deja existant.
+  ;; Utilise pour les calques SC3D_PPM_* : les zones PPM sont dessinees ByLayer,
+  ;; donc leur couleur doit rester modifiable depuis le gestionnaire de calques
+  ;; sans etre ecrasee a chaque insertion/mise a jour d'une camera.
+  (if (not (tblsearch "LAYER" name))
+    (SC3D:LAYER name color)
   )
 )
 
@@ -2920,30 +2919,30 @@
 )
 
 
-(defun SC3D:SETUP-LAYERS ( / done z lay)
-  (SC3D:LAYER "SC3D_GRILLE" 8 nil)
-  (SC3D:LAYER "SC3D_CAMERA" 2 nil)
-  (SC3D:LAYER "SC3D_RAYONS" 4 nil)
-  (SC3D:LAYER "SC3D_AXE" 7 nil)
-  (SC3D:LAYER "SC3D_TEXTES" 7 nil)
-  (SC3D:LAYER "SC3D_AJUSTEMENT" 30 nil)
-  (SC3D:LAYER "SC3D_HACHURE" 3 nil)
-  (SC3D:LAYER "SC3D_NON_VISIBLE" 1 nil)
-
-  ;; Calques PPM : couleur (ACI + vraie couleur) prise dans SC3D:PPM-LIST, pour
-  ;; que les zones/rectangles PPM (dessines ByLayer) suivent la couleur du
-  ;; calque. Standard "2025" prioritaire sur les noms de calque partages avec
-  ;; l'ancien standard (ex : SC3D_PPM_250, SC3D_PPM_125).
-  (setq done nil)
-  (foreach z (append (SC3D:PPM-LIST "2025") (SC3D:PPM-LIST "2014"))
-    (setq lay (nth 1 z))
-    (if (not (member lay done))
-      (progn
-        (SC3D:LAYER lay (nth 2 z) (nth 3 z))
-        (setq done (cons lay done))
-      )
-    )
-  )
+(defun SC3D:SETUP-LAYERS ()
+  (SC3D:LAYER "SC3D_GRILLE" 8)
+  (SC3D:LAYER "SC3D_CAMERA" 2)
+  (SC3D:LAYER "SC3D_RAYONS" 4)
+  (SC3D:LAYER "SC3D_AXE" 7)
+  (SC3D:LAYER "SC3D_TEXTES" 7)
+  (SC3D:LAYER "SC3D_AJUSTEMENT" 30)
+  (SC3D:LAYER "SC3D_HACHURE" 3)
+  (SC3D:LAYER "SC3D_NON_VISIBLE" 1)
+  ;; Couleurs par defaut a la creation seulement (cf. SC3D:LAYER-ENSURE) : les
+  ;; zones PPM sont dessinees ByLayer, donc changer la couleur de ces calques
+  ;; (gestionnaire de calques) change directement la couleur des zones PPM.
+  (SC3D:LAYER-ENSURE "SC3D_PPM_1500" 1)
+  (SC3D:LAYER-ENSURE "SC3D_PPM_1000" 6)
+  (SC3D:LAYER-ENSURE "SC3D_PPM_500" 211)
+  (SC3D:LAYER-ENSURE "SC3D_PPM_250" 11)
+  (SC3D:LAYER-ENSURE "SC3D_PPM_125" 2)
+  (SC3D:LAYER-ENSURE "SC3D_PPM_80" 3)
+  (SC3D:LAYER-ENSURE "SC3D_PPM_62" 3)
+  (SC3D:LAYER-ENSURE "SC3D_PPM_40" 4)
+  (SC3D:LAYER-ENSURE "SC3D_PPM_25" 4)
+  (SC3D:LAYER-ENSURE "SC3D_PPM_20" 5)
+  (SC3D:LAYER-ENSURE "SC3D_PPM_12" 5)
+  (SC3D:LAYER-ENSURE "SC3D_PPM_2" 257)
 )
 
 ;; ------------------------------------------------------------------------------------
@@ -3307,7 +3306,7 @@
 )
 
 (defun SC3D:ZONE-SOLID-RAW (p1 p2 p3 p4 lay aci rgb trans)
-  ;; rgb = nil : pas de couleur vraie sur l'entite (aci fait foi, ex. 256 = ByLayer).
+  ;; rgb nul = pas de surcharge couleur vraie, l'entite reste ByLayer (aci 256).
   (entmake
     (append
       (list
@@ -3351,17 +3350,16 @@
   (setq z (if (caddr (car pts)) (caddr (car pts)) 0.0))
   (setq midX (/ (apply '+ (mapcar 'car pts)) (float npts)))
   (setq midY (/ (apply '+ (mapcar 'cadr pts)) (float npts)))
+  ;; rgb nul = pas de surcharge couleur vraie, l'entite reste ByLayer (aci 256).
   (entmake
     (append
-      (append
-        (list
-          '(0 . "HATCH")
-          '(100 . "AcDbEntity")
-          (cons 8 lay)
-          (cons 62 aci)
-        )
-        (if rgb (list (cons 420 rgb)) nil)
+      (list
+        '(0 . "HATCH")
+        '(100 . "AcDbEntity")
+        (cons 8 lay)
+        (cons 62 aci)
       )
+      (if rgb (list (cons 420 rgb)) nil)
       (list
         (cons 440 (SC3D:TRANS-DXF trans))
         '(100 . "AcDbHatch")
@@ -3700,34 +3698,34 @@
 )
 
 (defun SC3D:PPM-LIST (standard)
+  ;; Couleur des zones PPM = couleur du calque (cf. SC3D:SETUP-LAYERS), plus de
+  ;; RGB fige ici : changer la couleur d'une zone se fait via le calque.
   (if (= standard "2025")
     (list
-      (list 1500.0 "SC3D_PPM_1500" 1 (SC3D:RGB 255 55 65))
-      (list 500.0  "SC3D_PPM_500"  6 (SC3D:RGB 245 95 175))
-      (list 250.0  "SC3D_PPM_250"  1 (SC3D:RGB 255 125 135))
-      (list 125.0  "SC3D_PPM_125"  2 (SC3D:RGB 255 235 85))
-      (list 80.0   "SC3D_PPM_80"   3 (SC3D:RGB 125 255 105))
-      (list 40.0   "SC3D_PPM_40"   4 (SC3D:RGB 85 220 230))
-      (list 20.0   "SC3D_PPM_20"   5 (SC3D:RGB 95 145 235))
+      (list 1500.0 "SC3D_PPM_1500")
+      (list 500.0  "SC3D_PPM_500")
+      (list 250.0  "SC3D_PPM_250")
+      (list 125.0  "SC3D_PPM_125")
+      (list 80.0   "SC3D_PPM_80")
+      (list 40.0   "SC3D_PPM_40")
+      (list 20.0   "SC3D_PPM_20")
       ;; Zone supplementaire 20 a 2 PPM.
-      (list 2.0    "SC3D_PPM_2"    9 (SC3D:RGB 160 90 220))
+      (list 2.0    "SC3D_PPM_2")
     )
     (list
-      (list 1000.0 "SC3D_PPM_1000" 6 (SC3D:RGB 255 0 130))
-      (list 250.0  "SC3D_PPM_250"  1 (SC3D:RGB 255 0 0))
-      (list 125.0  "SC3D_PPM_125"  2 (SC3D:RGB 255 255 0))
-      (list 62.0   "SC3D_PPM_62"   3 (SC3D:RGB 0 255 0))
-      (list 25.0   "SC3D_PPM_25"   4 (SC3D:RGB 0 255 255))
-      (list 12.0   "SC3D_PPM_12"   5 (SC3D:RGB 0 95 255))
+      (list 1000.0 "SC3D_PPM_1000")
+      (list 250.0  "SC3D_PPM_250")
+      (list 125.0  "SC3D_PPM_125")
+      (list 62.0   "SC3D_PPM_62")
+      (list 25.0   "SC3D_PPM_25")
+      (list 12.0   "SC3D_PPM_12")
       ;; Zone supplementaire 12 a 2 PPM.
-      (list 2.0    "SC3D_PPM_2"    9 (SC3D:RGB 160 90 220))
+      (list 2.0    "SC3D_PPM_2")
     )
   )
 )
 
 (defun SC3D:DRAW-PPM (resW maxD nearD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay d x1 x2)
-  ;; Couleur des entites PPM = ByLayer (256/nil) : c'est le calque (cf.
-  ;; SC3D:SETUP-LAYERS) qui porte la couleur, pas l'entite.
   (setq lst (SC3D:PPM-LIST standard))
   (setq prev 0.0)
   (setq done nil)
@@ -3741,6 +3739,7 @@
         (setq x1 (SC3D:MAX prev nearD))
         (setq x2 (SC3D:MIN d maxD))
 
+        ;; 256 = ByLayer : la zone prend la couleur du calque lay.
         (if (> x2 x1)
           (SC3D:GROUND-BAND x1 x2 maxD tanH tilt camH objH lay 256 nil trans T)
         )
@@ -4080,7 +4079,6 @@
 )
 
 (defun SC3D:SIDE-DRAW-PPM (resW maxD nearD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay d x1 x2)
-  ;; Couleur des entites PPM = ByLayer (256/nil), cf. SC3D:DRAW-PPM.
   (setq lst (SC3D:PPM-LIST standard))
   (setq prev 0.0)
   (setq done nil)
@@ -4094,6 +4092,7 @@
         (setq x1 (SC3D:MAX prev nearD))
         (setq x2 (SC3D:MIN d maxD))
 
+        ;; 256 = ByLayer : la zone prend la couleur du calque lay.
         (if (> x2 x1)
           (SC3D:SIDE-BAND x1 x2 objH lay 256 nil trans T)
         )
