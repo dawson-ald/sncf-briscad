@@ -2812,8 +2812,10 @@
   )
 )
 
-(defun SC3D:LAYER (name color / ed)
+(defun SC3D:LAYER (name color rgb / ed)
   ;; Creation / mise a jour du calque sans passer par la commande -LAYER.
+  ;; rgb (optionnel) : couleur vraie (420) portee par le calque, pour que les
+  ;; entites dessinees ByLayer (62 = 256) affichent la teinte exacte voulue.
   (if (tblsearch "LAYER" name)
     (progn
       (setq ed (entget (tblobjname "LAYER" name)))
@@ -2821,17 +2823,26 @@
         (setq ed (subst (cons 62 color) (assoc 62 ed) ed))
         (setq ed (append ed (list (cons 62 color))))
       )
+      (if rgb
+        (if (assoc 420 ed)
+          (setq ed (subst (cons 420 rgb) (assoc 420 ed) ed))
+          (setq ed (append ed (list (cons 420 rgb))))
+        )
+      )
       (entmod ed)
     )
     (entmake
-      (list
-        '(0 . "LAYER")
-        '(100 . "AcDbSymbolTableRecord")
-        '(100 . "AcDbLayerTableRecord")
-        (cons 2 name)
-        '(70 . 0)
-        (cons 62 color)
-        '(6 . "Continuous")
+      (append
+        (list
+          '(0 . "LAYER")
+          '(100 . "AcDbSymbolTableRecord")
+          '(100 . "AcDbLayerTableRecord")
+          (cons 2 name)
+          '(70 . 0)
+          (cons 62 color)
+        )
+        (if rgb (list (cons 420 rgb)) nil)
+        (list '(6 . "Continuous"))
       )
     )
   )
@@ -2909,27 +2920,30 @@
 )
 
 
-(defun SC3D:SETUP-LAYERS ()
-  (SC3D:LAYER "SC3D_GRILLE" 8)
-  (SC3D:LAYER "SC3D_CAMERA" 2)
-  (SC3D:LAYER "SC3D_RAYONS" 4)
-  (SC3D:LAYER "SC3D_AXE" 7)
-  (SC3D:LAYER "SC3D_TEXTES" 7)
-  (SC3D:LAYER "SC3D_AJUSTEMENT" 30)
-  (SC3D:LAYER "SC3D_HACHURE" 3)
-  (SC3D:LAYER "SC3D_NON_VISIBLE" 1)
-  (SC3D:LAYER "SC3D_PPM_1500" 1)
-  (SC3D:LAYER "SC3D_PPM_1000" 6)
-  (SC3D:LAYER "SC3D_PPM_500" 211)
-  (SC3D:LAYER "SC3D_PPM_250" 11)
-  (SC3D:LAYER "SC3D_PPM_125" 2)
-  (SC3D:LAYER "SC3D_PPM_80" 3)
-  (SC3D:LAYER "SC3D_PPM_62" 3)
-  (SC3D:LAYER "SC3D_PPM_40" 4)
-  (SC3D:LAYER "SC3D_PPM_25" 4)
-  (SC3D:LAYER "SC3D_PPM_20" 5)
-  (SC3D:LAYER "SC3D_PPM_12" 5)
-  (SC3D:LAYER "SC3D_PPM_2" 9)
+(defun SC3D:SETUP-LAYERS ( / done z lay)
+  (SC3D:LAYER "SC3D_GRILLE" 8 nil)
+  (SC3D:LAYER "SC3D_CAMERA" 2 nil)
+  (SC3D:LAYER "SC3D_RAYONS" 4 nil)
+  (SC3D:LAYER "SC3D_AXE" 7 nil)
+  (SC3D:LAYER "SC3D_TEXTES" 7 nil)
+  (SC3D:LAYER "SC3D_AJUSTEMENT" 30 nil)
+  (SC3D:LAYER "SC3D_HACHURE" 3 nil)
+  (SC3D:LAYER "SC3D_NON_VISIBLE" 1 nil)
+
+  ;; Calques PPM : couleur (ACI + vraie couleur) prise dans SC3D:PPM-LIST, pour
+  ;; que les zones/rectangles PPM (dessines ByLayer) suivent la couleur du
+  ;; calque. Standard "2025" prioritaire sur les noms de calque partages avec
+  ;; l'ancien standard (ex : SC3D_PPM_250, SC3D_PPM_125).
+  (setq done nil)
+  (foreach z (append (SC3D:PPM-LIST "2025") (SC3D:PPM-LIST "2014"))
+    (setq lay (nth 1 z))
+    (if (not (member lay done))
+      (progn
+        (SC3D:LAYER lay (nth 2 z) (nth 3 z))
+        (setq done (cons lay done))
+      )
+    )
+  )
 )
 
 ;; ------------------------------------------------------------------------------------
@@ -3293,17 +3307,22 @@
 )
 
 (defun SC3D:ZONE-SOLID-RAW (p1 p2 p3 p4 lay aci rgb trans)
+  ;; rgb = nil : pas de couleur vraie sur l'entite (aci fait foi, ex. 256 = ByLayer).
   (entmake
-    (list
-      '(0 . "SOLID")
-      (cons 8 lay)
-      (cons 62 aci)
-      (cons 420 rgb)
-      (cons 440 (SC3D:TRANS-DXF trans))
-      (cons 10 p1)
-      (cons 11 p2)
-      (cons 12 p4)
-      (cons 13 p3)
+    (append
+      (list
+        '(0 . "SOLID")
+        (cons 8 lay)
+        (cons 62 aci)
+      )
+      (if rgb (list (cons 420 rgb)) nil)
+      (list
+        (cons 440 (SC3D:TRANS-DXF trans))
+        (cons 10 p1)
+        (cons 11 p2)
+        (cons 12 p4)
+        (cons 13 p3)
+      )
     )
   )
 )
@@ -3334,12 +3353,16 @@
   (setq midY (/ (apply '+ (mapcar 'cadr pts)) (float npts)))
   (entmake
     (append
+      (append
+        (list
+          '(0 . "HATCH")
+          '(100 . "AcDbEntity")
+          (cons 8 lay)
+          (cons 62 aci)
+        )
+        (if rgb (list (cons 420 rgb)) nil)
+      )
       (list
-        '(0 . "HATCH")
-        '(100 . "AcDbEntity")
-        (cons 8 lay)
-        (cons 62 aci)
-        (cons 420 rgb)
         (cons 440 (SC3D:TRANS-DXF trans))
         '(100 . "AcDbHatch")
         (list 10 0.0 0.0 z)
@@ -3702,7 +3725,9 @@
   )
 )
 
-(defun SC3D:DRAW-PPM (resW maxD nearD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay aci rgb d x1 x2)
+(defun SC3D:DRAW-PPM (resW maxD nearD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay d x1 x2)
+  ;; Couleur des entites PPM = ByLayer (256/nil) : c'est le calque (cf.
+  ;; SC3D:SETUP-LAYERS) qui porte la couleur, pas l'entite.
   (setq lst (SC3D:PPM-LIST standard))
   (setq prev 0.0)
   (setq done nil)
@@ -3712,18 +3737,16 @@
       (progn
         (setq ppm (nth 0 z))
         (setq lay (nth 1 z))
-        (setq aci (nth 2 z))
-        (setq rgb (nth 3 z))
         (setq d (SC3D:PPM-DIST-TOP-OLD ppm resW tanH tilt camH objH))
         (setq x1 (SC3D:MAX prev nearD))
         (setq x2 (SC3D:MIN d maxD))
 
         (if (> x2 x1)
-          (SC3D:GROUND-BAND x1 x2 maxD tanH tilt camH objH lay aci rgb trans T)
+          (SC3D:GROUND-BAND x1 x2 maxD tanH tilt camH objH lay 256 nil trans T)
         )
 
         (if (and (> d nearD) (<= d maxD))
-          (SC3D:VERT-RECT d maxD tanH tilt camH objH objH lay aci)
+          (SC3D:VERT-RECT d maxD tanH tilt camH objH objH lay 256)
         )
 
         (if (>= d maxD)
@@ -4056,7 +4079,8 @@
   )
 )
 
-(defun SC3D:SIDE-DRAW-PPM (resW maxD nearD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay aci rgb d x1 x2)
+(defun SC3D:SIDE-DRAW-PPM (resW maxD nearD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay d x1 x2)
+  ;; Couleur des entites PPM = ByLayer (256/nil), cf. SC3D:DRAW-PPM.
   (setq lst (SC3D:PPM-LIST standard))
   (setq prev 0.0)
   (setq done nil)
@@ -4066,14 +4090,12 @@
       (progn
         (setq ppm (nth 0 z))
         (setq lay (nth 1 z))
-        (setq aci (nth 2 z))
-        (setq rgb (nth 3 z))
         (setq d (SC3D:PPM-DIST ppm resW tanH tanV tilt camH objH maxD))
         (setq x1 (SC3D:MAX prev nearD))
         (setq x2 (SC3D:MIN d maxD))
 
         (if (> x2 x1)
-          (SC3D:SIDE-BAND x1 x2 objH lay aci rgb trans T)
+          (SC3D:SIDE-BAND x1 x2 objH lay 256 nil trans T)
         )
 
         (if (>= d maxD)
