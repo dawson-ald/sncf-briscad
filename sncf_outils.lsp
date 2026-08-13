@@ -2909,7 +2909,10 @@
 )
 
 
-(defun SC3D:SETUP-LAYERS ()
+(defun SC3D:SETUP-LAYERS (standard)
+  ;; standard : "2025" ou "2014" (cf. SC3D:PPM-LIST). Determine la couleur des
+  ;; calques SC3D_PPM_250 et SC3D_PPM_125, partages par les deux normes DORI
+  ;; mais dont le RGB reel differe entre elles (attention a ne pas les fusionner).
   (SC3D:LAYER "SC3D_GRILLE" 8)
   (SC3D:LAYER "SC3D_CAMERA" 2)
   (SC3D:LAYER "SC3D_RAYONS" 4)
@@ -2918,18 +2921,25 @@
   (SC3D:LAYER "SC3D_AJUSTEMENT" 30)
   (SC3D:LAYER "SC3D_HACHURE" 3)
   (SC3D:LAYER "SC3D_NON_VISIBLE" 14)
-  (SC3D:LAYER "SC3D_PPM_1500" 1)
-  (SC3D:LAYER "SC3D_PPM_1000" 6)
-  (SC3D:LAYER "SC3D_PPM_500" 211)
-  (SC3D:LAYER "SC3D_PPM_250" 11)
-  (SC3D:LAYER "SC3D_PPM_125" 2)
-  (SC3D:LAYER "SC3D_PPM_80" 3)
-  (SC3D:LAYER "SC3D_PPM_62" 3)
-  (SC3D:LAYER "SC3D_PPM_40" 4)
-  (SC3D:LAYER "SC3D_PPM_25" 4)
-  (SC3D:LAYER "SC3D_PPM_20" 132)
-  (SC3D:LAYER "SC3D_PPM_12" 5)
-  (SC3D:LAYER "SC3D_PPM_2" 195)
+  ;; Couleurs ACI approchant au plus pres le RGB reel de SC3D:PPM-LIST.
+  (SC3D:LAYER "SC3D_PPM_1500" 240)  ; DORI 2025 - RGB(255,55,65)
+  (SC3D:LAYER "SC3D_PPM_1000" 230)  ; DORI 2014 - RGB(255,0,130)
+  (SC3D:LAYER "SC3D_PPM_500"  223)  ; DORI 2025 - RGB(245,95,175)
+  (if (= standard "2014")
+    (SC3D:LAYER "SC3D_PPM_250" 1)    ; DORI 2014 - RGB(255,0,0)
+    (SC3D:LAYER "SC3D_PPM_250" 11)   ; DORI 2025 - RGB(255,125,135)
+  )
+  (if (= standard "2014")
+    (SC3D:LAYER "SC3D_PPM_125" 2)    ; DORI 2014 - RGB(255,255,0)
+    (SC3D:LAYER "SC3D_PPM_125" 41)   ; DORI 2025 - RGB(255,235,85)
+  )
+  (SC3D:LAYER "SC3D_PPM_80"  93)   ; DORI 2025 - RGB(125,255,105)
+  (SC3D:LAYER "SC3D_PPM_62"  3)    ; DORI 2014 - RGB(0,255,0)
+  (SC3D:LAYER "SC3D_PPM_40"  133)  ; DORI 2025 - RGB(85,220,230)
+  (SC3D:LAYER "SC3D_PPM_25"  4)    ; DORI 2014 - RGB(0,255,255)
+  (SC3D:LAYER "SC3D_PPM_20"  163)  ; DORI 2025 - RGB(95,145,235)
+  (SC3D:LAYER "SC3D_PPM_12"  150)  ; DORI 2014 - RGB(0,95,255)
+  (SC3D:LAYER "SC3D_PPM_2"   193)  ; DORI 2025 & 2014 - RGB(160,90,220)
 )
 
 ;; ------------------------------------------------------------------------------------
@@ -4358,7 +4368,7 @@
 
 (defun SC3D:CREATE-CAMERA (base vals / calc blockName ins cfg rot camLayer)
   (setq vals (SC3D:SETVAL vals 'view "TOP"))
-  (SC3D:SETUP-LAYERS)
+  (SC3D:SETUP-LAYERS (cdr (assoc 'std vals)))
   (setq camLayer (SC3D:CAMERA-LAYER-NAME vals))
   (SC3D:LAYER camLayer 2)
   (setq *SC3D_ACTIVE_CAMERA_LAYER* camLayer)
@@ -4411,7 +4421,7 @@
 
 (defun SC3D:CREATE-CAMERA-SIDE (base vals / calc blockName ins cfg rot camLayer)
   (setq vals (SC3D:SETVAL vals 'view "SIDE"))
-  (SC3D:SETUP-LAYERS)
+  (SC3D:SETUP-LAYERS (cdr (assoc 'std vals)))
   (setq camLayer (SC3D:CAMERA-LAYER-NAME vals))
   (SC3D:LAYER camLayer 2)
   (setq *SC3D_ACTIVE_CAMERA_LAYER* camLayer)
