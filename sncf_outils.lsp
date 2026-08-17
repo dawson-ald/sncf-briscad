@@ -125,8 +125,9 @@
   s
 )
 
-(defun SMAJ:run-powershell-update (dfsFiles resultFile / psFile ps f shell rc dfsList)
+(defun SMAJ:run-powershell-update (dfsFiles resultFile / psFile ps f shell rc dfsList errorFile)
   (setq psFile (strcat (getenv "TEMP") "\\sncf_maj_update.ps1"))
+  (setq errorFile (strcat (getenv "TEMP") "\\sncf_maj_error.txt"))
   (setq dfsList (SMAJ:make-ps-list dfsFiles))
 
   (if (findfile psFile)
@@ -135,6 +136,10 @@
 
   (if (findfile resultFile)
     (vl-file-delete resultFile)
+  )
+
+  (if (findfile errorFile)
+    (vl-file-delete errorFile)
   )
 
   (setq ps
@@ -148,6 +153,7 @@
       "$branch = 'main'\n"
 
       "$resultFile = '" (SMAJ:replace-all resultFile "'" "''") "'\n"
+      "$errorFile = '" (SMAJ:replace-all errorFile "'" "''") "'\n"
       "$dfsFiles = " dfsList "\n"
 
       "function Read-TextAny($p) {\n"
@@ -207,76 +213,66 @@
 
       "function Get-GitHubLatestContent() {\n"
       "  $nonce = [Guid]::NewGuid().ToString()\n"
-      "  $branchUrl = \"https://api.github.com/repos/$owner/$repo/branches/$branch`?nocache=$nonce\"\n"
+      "  $rawUrl = \"https://raw.githubusercontent.com/$owner/$repo/$branch/$filePath`?nocache=$nonce\"\n"
 
-      "  $wc1 = New-WebClientNoCache\n"
-      "  $branchJson = $wc1.DownloadString($branchUrl)\n"
-      "  $branchObj = $branchJson | ConvertFrom-Json\n"
-      "  $sha = $branchObj.commit.sha\n"
+      "  $wc = New-WebClientNoCache\n"
+      "  $txt = $wc.DownloadString($rawUrl)\n"
 
-      "  if ([string]::IsNullOrWhiteSpace($sha)) {\n"
-      "    throw 'Impossible de recuperer le dernier SHA GitHub.'\n"
-      "  }\n"
-
-      "  $nonce2 = [Guid]::NewGuid().ToString()\n"
-      "  $contentUrl = \"https://api.github.com/repos/$owner/$repo/contents/$filePath`?ref=$sha&nocache=$nonce2\"\n"
-
-      "  $wc2 = New-WebClientNoCache\n"
-      "  $contentJson = $wc2.DownloadString($contentUrl)\n"
-      "  $contentObj = $contentJson | ConvertFrom-Json\n"
-
-      "  if ([string]::IsNullOrWhiteSpace($contentObj.content)) {\n"
+      "  if ([string]::IsNullOrWhiteSpace($txt)) {\n"
       "    throw 'Contenu GitHub vide ou introuvable.'\n"
       "  }\n"
-
-      "  $base64 = ($contentObj.content -replace '\\s+', '')\n"
-      "  $bytes = [Convert]::FromBase64String($base64)\n"
-      "  $txt = [System.Text.Encoding]::UTF8.GetString($bytes)\n"
 
       "  return $txt\n"
       "}\n"
 
-      "$newTxt = Get-GitHubLatestContent\n"
+      "try {\n"
+      "  $newTxt = Get-GitHubLatestContent\n"
 
-      "if (!(Is-SncfScript $newTxt)) {\n"
-      "  throw 'Le fichier telecharge ne contient pas *SCRIPT_ID* SNCF_Outils.'\n"
-      "}\n"
+      "  if (!(Is-SncfScript $newTxt)) {\n"
+      "    throw 'Le fichier telecharge ne contient pas *SCRIPT_ID* SNCF_Outils.'\n"
+      "  }\n"
 
-      "$allPaths = New-Object System.Collections.Generic.List[string]\n"
+      "  $allPaths = New-Object System.Collections.Generic.List[string]\n"
 
-      "foreach ($dfs in $dfsFiles) {\n"
-      "  if (!(Test-Path -LiteralPath $dfs)) { continue }\n"
+      "  foreach ($dfs in $dfsFiles) {\n"
+      "    if (!(Test-Path -LiteralPath $dfs)) { continue }\n"
 
-      "  $dfsTxt = Read-TextAny $dfs\n"
-      "  $paths = Extract-ScriptPaths $dfsTxt\n"
+      "    $dfsTxt = Read-TextAny $dfs\n"
+      "    $paths = Extract-ScriptPaths $dfsTxt\n"
 
-      "  foreach ($p in $paths) {\n"
-      "    if (-not $allPaths.Contains($p)) {\n"
-      "      $allPaths.Add($p)\n"
+      "    foreach ($p in $paths) {\n"
+      "      if (-not $allPaths.Contains($p)) {\n"
+      "        $allPaths.Add($p)\n"
+      "      }\n"
       "    }\n"
       "  }\n"
-      "}\n"
 
-      "$updated = New-Object System.Collections.Generic.List[string]\n"
+      "  $updated = New-Object System.Collections.Generic.List[string]\n"
 
-      "foreach ($p in $allPaths) {\n"
-      "  if (!(Test-Path -LiteralPath $p)) { continue }\n"
+      "  foreach ($p in $allPaths) {\n"
+      "    if (!(Test-Path -LiteralPath $p)) { continue }\n"
 
-      "  $oldTxt = Read-TextAny $p\n"
+      "    $oldTxt = Read-TextAny $p\n"
 
-      "  if (Is-SncfScript $oldTxt) {\n"
-      "    [System.IO.File]::WriteAllText($p, $newTxt, [System.Text.Encoding]::UTF8)\n"
+      "    if (Is-SncfScript $oldTxt) {\n"
+      "      [System.IO.File]::WriteAllText($p, $newTxt, [System.Text.Encoding]::UTF8)\n"
 
-      "    if (-not $updated.Contains($p)) {\n"
-      "      $updated.Add($p)\n"
+      "      if (-not $updated.Contains($p)) {\n"
+      "        $updated.Add($p)\n"
+      "      }\n"
       "    }\n"
       "  }\n"
-      "}\n"
 
-      "if ($updated.Count -gt 0) {\n"
-      "  Set-Content -LiteralPath $resultFile -Value $updated -Encoding UTF8\n"
-      "} else {\n"
-      "  Set-Content -LiteralPath $resultFile -Value '' -Encoding UTF8\n"
+      "  if ($updated.Count -gt 0) {\n"
+      "    Set-Content -LiteralPath $resultFile -Value $updated -Encoding UTF8\n"
+      "  } else {\n"
+      "    Set-Content -LiteralPath $resultFile -Value '' -Encoding UTF8\n"
+      "  }\n"
+      "} catch {\n"
+      "  $msg = $_.Exception.Message\n"
+      "  if ($_.Exception.InnerException) { $msg += ' | Inner: ' + $_.Exception.InnerException.Message }\n"
+      "  Set-Content -LiteralPath $errorFile -Value $msg -Encoding UTF8\n"
+      "  exit 1\n"
       "}\n"
     )
   )
@@ -331,9 +327,10 @@
   (reverse lst)
 )
 
-(defun C:S_MAJ (/ dfsFiles resultFile rc updated p nb)
+(defun C:S_MAJ (/ dfsFiles resultFile rc updated p nb errorFile errTxt)
   (setq dfsFiles (SMAJ:find-appload-dfs))
   (setq resultFile (strcat (getenv "TEMP") "\\sncf_maj_updated.txt"))
+  (setq errorFile (strcat (getenv "TEMP") "\\sncf_maj_error.txt"))
 
   (if (not dfsFiles)
     (progn
@@ -349,6 +346,12 @@
         (progn
           (princ "\nErreur pendant la mise a jour.")
           (princ (strcat "\nCode retour : " (itoa rc)))
+
+          (setq errTxt (SMAJ:read-file errorFile))
+
+          (if (and errTxt (/= errTxt ""))
+            (princ (strcat "\nDetail : " errTxt))
+          )
         )
         (progn
           (setq updated (SMAJ:read-lines-as-list resultFile))
