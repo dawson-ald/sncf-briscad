@@ -1949,7 +1949,7 @@
 
 ;; Source des cameras predefinies pour la boite de dialogue Creer/Modifier :
 ;; fichier local (*SC3D_CFG_FILE* dans *SC3D_CFG_FOLDER*) ou fichier partage sur
-;; GitHub (cf. SC3D:HTTP-GET / SC3D:DOWNLOAD-GITHUB-CAMERAS). Le choix est
+;; GitHub (cf. SC3D:DOWNLOAD-VIA-POWERSHELL / SC3D:DOWNLOAD-GITHUB-CAMERAS). Le choix est
 ;; persiste entre sessions via setenv/getenv (cf. SC3D:INIT-CAM-SOURCE).
 (setq *SC3D_GITHUB_CFG_URL* "https://raw.githubusercontent.com/dawson-ald/sncf-briscad/main/camera.config")
 (setq *SC3D_CAM_SOURCE_LIST* '("Local (camera.config)" "GitHub (sncf-briscad)"))
@@ -2297,49 +2297,89 @@
   )
 )
 
-(defun SC3D:HTTP-GET (url / http status result)
-  ;; GET synchrone via MSXML2.ServerXMLHTTP (adapte a un usage hors interface,
-  ;; sans boucle de messages). Renvoie le corps de la reponse (string) ou nil
-  ;; en cas d'echec (pas de reseau, timeout, statut HTTP different de 200...).
-  (setq result nil)
-  (setq http nil)
-  (vl-catch-all-apply
-    '(lambda ()
-       (setq http (vlax-create-object "MSXML2.ServerXMLHTTP.6.0"))
-       (vlax-invoke-method http 'setTimeouts 5000 5000 5000 8000)
-       (vlax-invoke-method http 'open "GET" url :vlax-false)
-       (vlax-invoke-method http 'send)
-       (setq status (vlax-get-property http 'status))
-       (if (= status 200)
-         (setq result (vlax-get-property http 'responseText))
-       )
-     )
-    nil
-  )
-  (if http
-    (vl-catch-all-apply '(lambda () (vlax-release-object http)) nil)
-  )
-  result
-)
-
-(defun SC3D:WRITE-TEXT (path text / f)
-  (setq f (open path "w"))
-  (if f
-    (progn
-      (write-line text f)
-      (close f)
-      T
+(defun SC3D:PS-ESCAPE (s / out i)
+  ;; Echappe les guillemets simples pour insertion dans une chaine PowerShell
+  ;; entre quotes simples ('...').
+  (if (not s) (setq s ""))
+  (setq out "")
+  (setq i 1)
+  (while (<= i (strlen s))
+    (setq out
+      (strcat
+        out
+        (if (= (substr s i 1) "'") "''" (substr s i 1))
+      )
     )
-    nil
+    (setq i (1+ i))
   )
+  out
 )
 
-(defun SC3D:DOWNLOAD-GITHUB-CAMERAS (/ text)
-  (setq text (SC3D:HTTP-GET *SC3D_GITHUB_CFG_URL*))
-  (if (and text (/= text ""))
-    (SC3D:WRITE-TEXT (SC3D:GITHUB-CFG-PATH) text)
-    nil
+(defun SC3D:DOWNLOAD-VIA-POWERSHELL (url outFile / psFile errorFile ps f shell rc ok)
+  ;; Telecharge `url` vers `outFile` via un script PowerShell externe
+  ;; (WebClient + proxy systeme + identifiants Windows par defaut), a
+  ;; l'identique de SMAJ:run-powershell-update dans F_MAJ.lsp. Un appel HTTP
+  ;; direct depuis BricsCAD (MSXML2) est bloque par le reseau interne SNCF ;
+  ;; passer par un process PowerShell externe contourne ce blocage.
+  (setq psFile (strcat (getenv "TEMP") "\\sc3d_camera_dl.ps1"))
+  (setq errorFile (strcat (getenv "TEMP") "\\sc3d_camera_dl_error.txt"))
+
+  (if (findfile psFile) (vl-file-delete psFile))
+  (if (findfile outFile) (vl-file-delete outFile))
+  (if (findfile errorFile) (vl-file-delete errorFile))
+
+  (setq ps
+    (strcat
+      "$ErrorActionPreference = 'Stop'\n"
+      "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12\n"
+      "$url = '" (SC3D:PS-ESCAPE url) "'\n"
+      "$outFile = '" (SC3D:PS-ESCAPE outFile) "'\n"
+      "$errorFile = '" (SC3D:PS-ESCAPE errorFile) "'\n"
+      "try {\n"
+      "  $wc = New-Object System.Net.WebClient\n"
+      "  $wc.Proxy = [System.Net.WebRequest]::GetSystemWebProxy()\n"
+      "  $wc.Proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials\n"
+      "  $wc.Headers.Add('User-Agent','Mozilla/5.0 SNCF-CAMERA')\n"
+      "  $wc.Headers.Add('Cache-Control','no-cache, no-store, must-revalidate')\n"
+      "  $wc.Headers.Add('Pragma','no-cache')\n"
+      "  $txt = $wc.DownloadString($url)\n"
+      "  if ([string]::IsNullOrWhiteSpace($txt)) { throw 'Contenu vide ou introuvable.' }\n"
+      "  [System.IO.File]::WriteAllText($outFile, $txt, [System.Text.Encoding]::UTF8)\n"
+      "} catch {\n"
+      "  $msg = $_.Exception.Message\n"
+      "  if ($_.Exception.InnerException) { $msg += ' | Inner: ' + $_.Exception.InnerException.Message }\n"
+      "  Set-Content -LiteralPath $errorFile -Value $msg -Encoding UTF8\n"
+      "  exit 1\n"
+      "}\n"
+    )
   )
+
+  (setq ok nil)
+  (if (setq f (open psFile "w"))
+    (progn
+      (write-line ps f)
+      (close f)
+
+      (setq shell (vlax-create-object "WScript.Shell"))
+      (setq rc
+        (vlax-invoke-method
+          shell
+          'Run
+          (strcat "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" psFile "\"")
+          0
+          :vlax-true
+        )
+      )
+      (vlax-release-object shell)
+
+      (setq ok (and (= rc 0) (findfile outFile)))
+    )
+  )
+  ok
+)
+
+(defun SC3D:DOWNLOAD-GITHUB-CAMERAS ()
+  (SC3D:DOWNLOAD-VIA-POWERSHELL *SC3D_GITHUB_CFG_URL* (SC3D:GITHUB-CFG-PATH))
 )
 
 (defun SC3D:READ-LINES (path / f line out)
