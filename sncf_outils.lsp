@@ -125,7 +125,7 @@
   s
 )
 
-(defun SMAJ:run-powershell-update (dfsFiles resultFile wait / psFile ps f shell rc dfsList)
+(defun SMAJ:run-powershell-update (dfsFiles resultFile / psFile ps f shell rc dfsList)
   (setq psFile (strcat (getenv "TEMP") "\\sncf_maj_update.ps1"))
   (setq dfsList (SMAJ:make-ps-list dfsFiles))
 
@@ -264,7 +264,7 @@
 
       "  $oldTxt = Read-TextAny $p\n"
 
-      "  if ((Is-SncfScript $oldTxt) -and ($oldTxt -ne $newTxt)) {\n"
+      "  if (Is-SncfScript $oldTxt) {\n"
       "    [System.IO.File]::WriteAllText($p, $newTxt, [System.Text.Encoding]::UTF8)\n"
 
       "    if (-not $updated.Contains($p)) {\n"
@@ -299,7 +299,7 @@
             "\""
           )
           0
-          (if wait :vlax-true :vlax-false)
+          :vlax-true
         )
       )
 
@@ -331,30 +331,24 @@
   (reverse lst)
 )
 
-(defun SMAJ:do-update (silent / dfsFiles resultFile rc updated p nb)
+(defun C:S_MAJ (/ dfsFiles resultFile rc updated p nb)
   (setq dfsFiles (SMAJ:find-appload-dfs))
   (setq resultFile (strcat (getenv "TEMP") "\\sncf_maj_updated.txt"))
 
   (if (not dfsFiles)
-    (if (not silent)
-      (progn
-        (princ "\nAucun fichier appload.dfs trouve.")
-        (princ "\nRecherche faite dans : %APPDATA%\\Bricsys\\BricsCAD\\")
-      )
+    (progn
+      (princ "\nAucun fichier appload.dfs trouve.")
+      (princ "\nRecherche faite dans : %APPDATA%\\Bricsys\\BricsCAD\\")
     )
     (progn
-      (if (not silent)
-        (princ "\nVerification des mises a jour...")
-      )
+      (princ "\nMise a jour en cours...")
 
-      (setq rc (SMAJ:run-powershell-update dfsFiles resultFile T))
+      (setq rc (SMAJ:run-powershell-update dfsFiles resultFile))
 
       (if (/= rc 0)
-        (if (not silent)
-          (progn
-            (princ "\nErreur pendant la mise a jour.")
-            (princ (strcat "\nCode retour : " (itoa rc)))
-          )
+        (progn
+          (princ "\nErreur pendant la mise a jour.")
+          (princ (strcat "\nCode retour : " (itoa rc)))
         )
         (progn
           (setq updated (SMAJ:read-lines-as-list resultFile))
@@ -369,95 +363,17 @@
             )
           )
 
-          (cond
-            ((> nb 0)
-              (princ "\nSNCF Outils : une difference a ete detectee avec GitHub, mise a jour appliquee automatiquement.")
+          (if (> nb 0)
+            (princ
+                "\nMise a jour terminee ! "
             )
-            ((not silent)
-              (princ "\nAucun script mis a jour (deja a jour).")
-            )
+            (princ "\nAucun script mis a jour.")
           )
         )
       )
     )
   )
 
-  (princ)
-)
-
-(defun C:S_MAJ ()
-  (SMAJ:do-update nil)
-)
-
-;; ----- Verification au chargement, sans bloquer BricsCAD -----
-;; La verification/telechargement tourne dans un processus PowerShell separe (nowait).
-;; Un reactor de commande verifie discretement, a chaque commande lancee par l'utilisateur,
-;; si le resultat est pret, sans jamais mettre BricsCAD en attente.
-
-(defun SMAJ:poll-apply-update (/ updated p nb)
-  (setq updated (SMAJ:read-lines-as-list *SMAJ-poll-resultfile*))
-  (setq nb 0)
-
-  (foreach p updated
-    (if (findfile p)
-      (progn
-        (setq nb (1+ nb))
-        (load p)
-      )
-    )
-  )
-
-  (if (> nb 0)
-    (princ "\nSNCF Outils : une difference a ete detectee avec GitHub, mise a jour appliquee automatiquement.\n")
-  )
-
-  (princ)
-)
-
-(defun SMAJ:poll-callback (reactor args)
-  (setq *SMAJ-poll-tries* (1+ *SMAJ-poll-tries*))
-
-  (cond
-    ((findfile *SMAJ-poll-resultfile*)
-      (vlr-remove *SMAJ-poll-reactor*)
-      (setq *SMAJ-poll-reactor* nil)
-      (SMAJ:poll-apply-update)
-    )
-    ((> *SMAJ-poll-tries* 200)
-      (vlr-remove *SMAJ-poll-reactor*)
-      (setq *SMAJ-poll-reactor* nil)
-    )
-  )
-
-  (princ)
-)
-
-(defun SMAJ:start-check-update-on-load (/ dfsFiles)
-  (setq dfsFiles (SMAJ:find-appload-dfs))
-
-  (if dfsFiles
-    (progn
-      (setq *SMAJ-poll-resultfile* (strcat (getenv "TEMP") "\\sncf_maj_updated.txt"))
-      (setq *SMAJ-poll-tries* 0)
-
-      ;; wait = nil : lance PowerShell en arriere-plan, retour immediat (pas d'attente)
-      (SMAJ:run-powershell-update dfsFiles *SMAJ-poll-resultfile* nil)
-
-      (if *SMAJ-poll-reactor*
-        (vlr-remove *SMAJ-poll-reactor*)
-      )
-
-      (setq *SMAJ-poll-reactor*
-        (vlr-command-reactor nil (list (cons :vlr-commandWillStart 'SMAJ:poll-callback)))
-      )
-    )
-  )
-
-  (princ)
-)
-
-(defun SMAJ:check-update-on-load ()
-  (vl-catch-all-apply 'SMAJ:start-check-update-on-load nil)
   (princ)
 )
 
