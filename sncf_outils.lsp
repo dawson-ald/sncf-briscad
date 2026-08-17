@@ -125,8 +125,8 @@
   s
 )
 
-(defun SMAJ:run-powershell-update (dfsFiles resultFile wait / psFile ps f shell rc dfsList)
-  (setq psFile (strcat resultFile ".ps1"))
+(defun SMAJ:run-powershell-update (dfsFiles resultFile / psFile ps f shell rc dfsList)
+  (setq psFile (strcat (getenv "TEMP") "\\sncf_maj_update.ps1"))
   (setq dfsList (SMAJ:make-ps-list dfsFiles))
 
   (if (findfile psFile)
@@ -264,7 +264,7 @@
 
       "  $oldTxt = Read-TextAny $p\n"
 
-      "  if (Is-SncfScript $oldTxt) {\n"
+      "  if ((Is-SncfScript $oldTxt) -and ($oldTxt -ne $newTxt)) {\n"
       "    [System.IO.File]::WriteAllText($p, $newTxt, [System.Text.Encoding]::UTF8)\n"
 
       "    if (-not $updated.Contains($p)) {\n"
@@ -299,7 +299,7 @@
             "\""
           )
           0
-          (if wait :vlax-true :vlax-false)
+          :vlax-true
         )
       )
 
@@ -331,24 +331,30 @@
   (reverse lst)
 )
 
-(defun C:S_MAJ (/ dfsFiles resultFile rc updated p nb)
+(defun SMAJ:do-update (silent / dfsFiles resultFile rc updated p nb)
   (setq dfsFiles (SMAJ:find-appload-dfs))
   (setq resultFile (strcat (getenv "TEMP") "\\sncf_maj_updated.txt"))
 
   (if (not dfsFiles)
-    (progn
-      (princ "\nAucun fichier appload.dfs trouve.")
-      (princ "\nRecherche faite dans : %APPDATA%\\Bricsys\\BricsCAD\\")
+    (if (not silent)
+      (progn
+        (princ "\nAucun fichier appload.dfs trouve.")
+        (princ "\nRecherche faite dans : %APPDATA%\\Bricsys\\BricsCAD\\")
+      )
     )
     (progn
-      (princ "\nMise a jour en cours...")
+      (if (not silent)
+        (princ "\nVerification des mises a jour...")
+      )
 
-      (setq rc (SMAJ:run-powershell-update dfsFiles resultFile T))
+      (setq rc (SMAJ:run-powershell-update dfsFiles resultFile))
 
       (if (/= rc 0)
-        (progn
-          (princ "\nErreur pendant la mise a jour.")
-          (princ (strcat "\nCode retour : " (itoa rc)))
+        (if (not silent)
+          (progn
+            (princ "\nErreur pendant la mise a jour.")
+            (princ (strcat "\nCode retour : " (itoa rc)))
+          )
         )
         (progn
           (setq updated (SMAJ:read-lines-as-list resultFile))
@@ -363,104 +369,30 @@
             )
           )
 
-          (if (> nb 0)
-            (princ
-                "\nMise a jour terminee ! "
+          (cond
+            ((> nb 0)
+              (princ "\nSNCF Outils : une difference a ete detectee avec GitHub, mise a jour appliquee automatiquement.")
             )
-            (princ "\nAucun script mis a jour.")
-          )
-        )
-      )
-    )
-  )
-
-  (princ)
-)
-
-;; ------------------------------------------------------------------------- Verification automatique au chargement -------------------------------------------------------------------------
-;; Lance la verification/mise a jour dans un processus PowerShell separe (non bloquant), et
-;; applique le resultat via un sondage passif (reactor) qui ne gele jamais BricsCAD.
-
-(defun SMAJ:auto-stop-poll ()
-  (if *SMAJ:auto-reactor*
-    (progn
-      (vlr-remove *SMAJ:auto-reactor*)
-      (setq *SMAJ:auto-reactor* nil)
-    )
-  )
-)
-
-(defun SMAJ:auto-poll-callback (reactor params / updated nb p)
-  (cond
-    ((findfile *SMAJ:auto-result-file*)
-      (setq updated (SMAJ:read-lines-as-list *SMAJ:auto-result-file*))
-
-      (if (findfile *SMAJ:auto-result-file*)
-        (vl-file-delete *SMAJ:auto-result-file*)
-      )
-
-      ;; On ne fait pas de (load p) ici : le fichier mis a jour est le bundle complet
-      ;; (header + toutes les commandes), donc le recharger en pleine session re-executerait
-      ;; tous ses formulaires de premier niveau (banniere, enregistrement des reactors, etc.)
-      ;; et donnerait l'impression que le script se charge deux fois. La mise a jour est deja
-      ;; ecrite sur disque ; elle prendra effet au prochain demarrage/rechargement.
-      (setq nb 0)
-
-      (foreach p updated
-        (if (findfile p)
-          (setq nb (1+ nb))
-        )
-      )
-
-      (if (> nb 0)
-        (princ "\nSNCF Outils : mise a jour telechargee, elle sera active au prochain demarrage de BricsCAD.")
-      )
-
-      (SMAJ:auto-stop-poll)
-    )
-    (T
-      (setq *SMAJ:auto-poll-count* (1+ *SMAJ:auto-poll-count*))
-
-      ;; Abandon silencieux si le processus en arriere-plan n'a jamais produit de resultat
-      ;; (pas de reseau, erreur, etc.) pour ne pas laisser un reactor tourner indefiniment.
-      (if (> *SMAJ:auto-poll-count* 60)
-        (SMAJ:auto-stop-poll)
-      )
-    )
-  )
-
-  (princ)
-)
-
-(defun SMAJ:auto-check-updates (/ dfsFiles)
-  (if (not *SMAJ:auto-checked*)
-    (progn
-      (setq *SMAJ:auto-checked* T)
-      (setq dfsFiles (SMAJ:find-appload-dfs))
-
-      (if dfsFiles
-        (progn
-          (SMAJ:auto-stop-poll)
-
-          (setq *SMAJ:auto-result-file* (strcat (getenv "TEMP") "\\sncf_maj_auto_result.txt"))
-          (setq *SMAJ:auto-poll-count* 0)
-
-          (SMAJ:run-powershell-update dfsFiles *SMAJ:auto-result-file* nil)
-
-          (setq *SMAJ:auto-reactor*
-            (vlr-editor-reactor
-              nil
-              (list (cons :vlr-commandWillStart 'SMAJ:auto-poll-callback))
+            ((not silent)
+              (princ "\nAucun script mis a jour (deja a jour).")
             )
           )
         )
       )
     )
   )
+
   (princ)
 )
 
-(SMAJ:auto-check-updates)
+(defun C:S_MAJ ()
+  (SMAJ:do-update nil)
+)
+
+(defun SMAJ:check-update-on-load ()
+  (vl-catch-all-apply 'SMAJ:do-update (list T))
+  (princ)
+)
 
 ;; ------------------------------------------------------------------------------------ F_UTILS ------------------------------------------------------------------------------------
 
@@ -11580,3 +11512,7 @@ Image source utilisee : " path))
 
 
 
+;; ------------------------------------------------------------------------------------ AUTO MAJ AU CHARGEMENT ------------------------------------------------------------------------------------
+;; Execute en tout dernier (apres la definition de toutes les commandes) afin d'eviter
+;; qu'un rechargement du script pendant sa propre lecture n'ecrase la nouvelle version.
+(SMAJ:check-update-on-load)
