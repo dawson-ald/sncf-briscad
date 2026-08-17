@@ -2301,6 +2301,18 @@
   )
 )
 
+(defun SC3D:CLEAR-GITHUB-CACHE ( / p)
+  ;; Supprime le fichier temporaire de la liste GitHub, pour forcer un
+  ;; telechargement completement frais (cf. SC3D:DOWNLOAD-GITHUB-CAMERAS,
+  ;; appele juste apres a l'ouverture du dialogue) a chaque creation/
+  ;; modification de camera, plutot que de risquer de reutiliser un fichier
+  ;; laisse par une session precedente.
+  (setq p (SC3D:GITHUB-CFG-PATH))
+  (if (findfile p)
+    (vl-file-delete p)
+  )
+)
+
 (defun SC3D:PS-ESCAPE (s / out i)
   ;; Echappe les guillemets simples pour insertion dans une chaine PowerShell
   ;; entre quotes simples ('...').
@@ -4875,6 +4887,7 @@
 )
 
 (defun SC3D:CMD-CREER (/ vals base rot)
+  (SC3D:CLEAR-GITHUB-CACHE)
   (setq vals (SC3D:DIALOG nil))
 
   (if vals
@@ -4909,6 +4922,7 @@
 
           (if oldVals
             (progn
+              (SC3D:CLEAR-GITHUB-CACHE)
               (setq newVals (SC3D:DIALOG oldVals))
 
               (if newVals
