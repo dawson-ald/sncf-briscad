@@ -2301,18 +2301,6 @@
   )
 )
 
-(defun SC3D:CLEAR-GITHUB-CACHE ( / p)
-  ;; Supprime le fichier temporaire de la liste GitHub, pour forcer un
-  ;; telechargement completement frais (cf. SC3D:DOWNLOAD-GITHUB-CAMERAS,
-  ;; appele juste apres a l'ouverture du dialogue) a chaque creation/
-  ;; modification de camera, plutot que de risquer de reutiliser un fichier
-  ;; laisse par une session precedente.
-  (setq p (SC3D:GITHUB-CFG-PATH))
-  (if (findfile p)
-    (vl-file-delete p)
-  )
-)
-
 (defun SC3D:PS-ESCAPE (s / out i)
   ;; Echappe les guillemets simples pour insertion dans une chaine PowerShell
   ;; entre quotes simples ('...').
@@ -2428,6 +2416,14 @@
 (defun SC3D:DOWNLOAD-GITHUB-CAMERAS ()
   (SC3D:DOWNLOAD-VIA-POWERSHELL *SC3D_GITHUB_CFG_URL* (SC3D:GITHUB-CFG-PATH))
 )
+
+;; A chaque chargement du script, on supprime le cache local
+;; (sc3d_camera_github.config) et on le recree en retelechargeant la liste
+;; GitHub, pour ne jamais partir sur une copie perimee laissee par une
+;; session precedente. vl-catch-all-apply evite qu'un echec reseau au
+;; chargement (PowerShell/proxy indisponible) interrompe le chargement du
+;; reste du script.
+(vl-catch-all-apply 'SC3D:DOWNLOAD-GITHUB-CAMERAS)
 
 (defun SC3D:READ-LINES (path / f line out)
   (setq out '())
@@ -4887,7 +4883,6 @@
 )
 
 (defun SC3D:CMD-CREER (/ vals base rot)
-  (SC3D:CLEAR-GITHUB-CACHE)
   (setq vals (SC3D:DIALOG nil))
 
   (if vals
@@ -4922,7 +4917,6 @@
 
           (if oldVals
             (progn
-              (SC3D:CLEAR-GITHUB-CACHE)
               (setq newVals (SC3D:DIALOG oldVals))
 
               (if newVals
