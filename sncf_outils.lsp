@@ -125,8 +125,8 @@
   s
 )
 
-(defun SMAJ:run-powershell-update (dfsFiles resultFile / psFile ps f shell rc dfsList)
-  (setq psFile (strcat (getenv "TEMP") "\\sncf_maj_update.ps1"))
+(defun SMAJ:run-powershell-update (dfsFiles resultFile wait / psFile ps f shell rc dfsList)
+  (setq psFile (strcat resultFile ".ps1"))
   (setq dfsList (SMAJ:make-ps-list dfsFiles))
 
   (if (findfile psFile)
@@ -299,7 +299,7 @@
             "\""
           )
           0
-          :vlax-true
+          (if wait :vlax-true :vlax-false)
         )
       )
 
@@ -343,7 +343,7 @@
     (progn
       (princ "\nMise a jour en cours...")
 
-      (setq rc (SMAJ:run-powershell-update dfsFiles resultFile))
+      (setq rc (SMAJ:run-powershell-update dfsFiles resultFile T))
 
       (if (/= rc 0)
         (progn
@@ -376,6 +376,89 @@
 
   (princ)
 )
+
+;; ------------------------------------------------------------------------- Verification automatique au chargement -------------------------------------------------------------------------
+;; Lance la verification/mise a jour dans un processus PowerShell separe (non bloquant), et
+;; applique le resultat via un sondage passif (reactor) qui ne gele jamais BricsCAD.
+
+(defun SMAJ:auto-stop-poll ()
+  (if *SMAJ:auto-reactor*
+    (progn
+      (vlr-remove *SMAJ:auto-reactor*)
+      (setq *SMAJ:auto-reactor* nil)
+    )
+  )
+)
+
+(defun SMAJ:auto-poll-callback (reactor params / updated nb p)
+  (cond
+    ((findfile *SMAJ:auto-result-file*)
+      (setq updated (SMAJ:read-lines-as-list *SMAJ:auto-result-file*))
+
+      (if (findfile *SMAJ:auto-result-file*)
+        (vl-file-delete *SMAJ:auto-result-file*)
+      )
+
+      (setq nb 0)
+
+      (foreach p updated
+        (if (findfile p)
+          (progn
+            (setq nb (1+ nb))
+            (load p)
+          )
+        )
+      )
+
+      (if (> nb 0)
+        (princ "\nSNCF Outils : mise a jour installee et activee.")
+      )
+
+      (SMAJ:auto-stop-poll)
+    )
+    (T
+      (setq *SMAJ:auto-poll-count* (1+ *SMAJ:auto-poll-count*))
+
+      ;; Abandon silencieux si le processus en arriere-plan n'a jamais produit de resultat
+      ;; (pas de reseau, erreur, etc.) pour ne pas laisser un reactor tourner indefiniment.
+      (if (> *SMAJ:auto-poll-count* 60)
+        (SMAJ:auto-stop-poll)
+      )
+    )
+  )
+
+  (princ)
+)
+
+(defun SMAJ:auto-check-updates (/ dfsFiles)
+  (if (not *SMAJ:auto-checked*)
+    (progn
+      (setq *SMAJ:auto-checked* T)
+      (setq dfsFiles (SMAJ:find-appload-dfs))
+
+      (if dfsFiles
+        (progn
+          (SMAJ:auto-stop-poll)
+
+          (setq *SMAJ:auto-result-file* (strcat (getenv "TEMP") "\\sncf_maj_auto_result.txt"))
+          (setq *SMAJ:auto-poll-count* 0)
+
+          (SMAJ:run-powershell-update dfsFiles *SMAJ:auto-result-file* nil)
+
+          (setq *SMAJ:auto-reactor*
+            (vlr-editor-reactor
+              nil
+              (list (cons :vlr-commandWillStart 'SMAJ:auto-poll-callback))
+            )
+          )
+        )
+      )
+    )
+  )
+  (princ)
+)
+
+(SMAJ:auto-check-updates)
 
 ;; ------------------------------------------------------------------------------------ F_UTILS ------------------------------------------------------------------------------------
 
@@ -1937,6 +2020,13 @@
 (setq *SC3D_CFG_FOLDER* "BricsCAD")
 (setq *SC3D_CFG_FILE* "camera.config")
 
+;; Source des cameras predefinies pour la boite de dialogue Creer/Modifier :
+;; fichier local (*SC3D_CFG_FILE* dans *SC3D_CFG_FOLDER*) ou fichier partage sur
+;; GitHub (cf. SC3D:HTTP-GET / SC3D:DOWNLOAD-GITHUB-CAMERAS). Le choix est
+;; persiste entre sessions via setenv/getenv (cf. SC3D:INIT-CAM-SOURCE).
+(setq *SC3D_GITHUB_CFG_URL* "https://raw.githubusercontent.com/dawson-ald/sncf-briscad/main/camera.config")
+(setq *SC3D_CAM_SOURCE_LIST* '("Local (camera.config)" "GitHub (sncf-briscad)"))
+
 (setq *SC3D_SENSOR_LIST*
   '(
     "1/6"
@@ -2240,6 +2330,91 @@
   (strcat (SC3D:CFG-DIR) "\\" *SC3D_CFG_FILE*)
 )
 
+;; ------------------------------------------------------------------------------------
+;; SOURCE DES CAMERAS (LOCAL / GITHUB)
+;; ------------------------------------------------------------------------------------
+
+(defun SC3D:CAM-SOURCE ()
+  (if (and (boundp '*SC3D_CAM_SOURCE*) *SC3D_CAM_SOURCE*)
+    *SC3D_CAM_SOURCE*
+    "GITHUB"
+  )
+)
+
+(defun SC3D:SET-CAM-SOURCE (src)
+  (setq *SC3D_CAM_SOURCE* src)
+  (vl-catch-all-apply 'setenv (list "SC3D_CAMERA_SOURCE" src))
+)
+
+(defun SC3D:INIT-CAM-SOURCE (/ v)
+  ;; Par defaut (premier lancement, pas encore de preference enregistree) :
+  ;; source GitHub, pour que la liste partagee sncf-briscad soit utilisee
+  ;; sans configuration prealable.
+  (setq v (vl-catch-all-apply 'getenv (list "SC3D_CAMERA_SOURCE")))
+  (if (or (vl-catch-all-error-p v) (null v) (= v ""))
+    (setq v "GITHUB")
+  )
+  (setq *SC3D_CAM_SOURCE* v)
+)
+
+(SC3D:INIT-CAM-SOURCE)
+
+(defun SC3D:GITHUB-CFG-PATH ()
+  (strcat (getvar "TEMPPREFIX") "sc3d_camera_github.config")
+)
+
+(defun SC3D:ACTIVE-CFG-PATH ()
+  (if (= (SC3D:CAM-SOURCE) "GITHUB")
+    (SC3D:GITHUB-CFG-PATH)
+    (SC3D:CFG-PATH)
+  )
+)
+
+(defun SC3D:HTTP-GET (url / http status result)
+  ;; GET synchrone via MSXML2.ServerXMLHTTP (adapte a un usage hors interface,
+  ;; sans boucle de messages). Renvoie le corps de la reponse (string) ou nil
+  ;; en cas d'echec (pas de reseau, timeout, statut HTTP different de 200...).
+  (setq result nil)
+  (setq http nil)
+  (vl-catch-all-apply
+    '(lambda ()
+       (setq http (vlax-create-object "MSXML2.ServerXMLHTTP.6.0"))
+       (vlax-invoke-method http 'setTimeouts 5000 5000 5000 8000)
+       (vlax-invoke-method http 'open "GET" url :vlax-false)
+       (vlax-invoke-method http 'send)
+       (setq status (vlax-get-property http 'status))
+       (if (= status 200)
+         (setq result (vlax-get-property http 'responseText))
+       )
+     )
+    nil
+  )
+  (if http
+    (vl-catch-all-apply '(lambda () (vlax-release-object http)) nil)
+  )
+  result
+)
+
+(defun SC3D:WRITE-TEXT (path text / f)
+  (setq f (open path "w"))
+  (if f
+    (progn
+      (write-line text f)
+      (close f)
+      T
+    )
+    nil
+  )
+)
+
+(defun SC3D:DOWNLOAD-GITHUB-CAMERAS (/ text)
+  (setq text (SC3D:HTTP-GET *SC3D_GITHUB_CFG_URL*))
+  (if (and text (/= text ""))
+    (SC3D:WRITE-TEXT (SC3D:GITHUB-CFG-PATH) text)
+    nil
+  )
+)
+
 (defun SC3D:READ-LINES (path / f line out)
   (setq out '())
   (if (findfile path)
@@ -2305,15 +2480,21 @@
   )
 )
 
-(defun SC3D:LOAD-CAMERAS (/ lines out cam)
+(defun SC3D:LOAD-CAMERAS-FROM (path / out cam)
   (setq out '())
-  (foreach l (SC3D:READ-LINES (SC3D:CFG-PATH))
+  (foreach l (SC3D:READ-LINES path)
     (setq cam (SC3D:CAM-LINE->ALIST l))
     (if cam
       (setq out (append out (list cam)))
     )
   )
   out
+)
+
+(defun SC3D:LOAD-CAMERAS ()
+  ;; Toujours le fichier local : utilise par Ajouter/Supprimer, qui n'ecrivent
+  ;; que dans camera.config local (on ne peut pas ecrire sur GitHub depuis ici).
+  (SC3D:LOAD-CAMERAS-FROM (SC3D:CFG-PATH))
 )
 
 (defun SC3D:SAVE-CAMERAS (cams / lines)
@@ -2351,6 +2532,47 @@
 
 (defun SC3D:FIND-CAMERA (manu model / cams found)
   (setq cams (SC3D:LOAD-CAMERAS))
+  (setq found nil)
+  (foreach cam cams
+    (if (and (= (cdr (assoc 'manu cam)) manu) (= (cdr (assoc 'model cam)) model))
+      (setq found cam)
+    )
+  )
+  found
+)
+
+;; Variantes "-ACTIVE" : lisent depuis la source actuellement choisie dans la
+;; boite de dialogue Creer/Modifier (SC3D:CAM-SOURCE -> LOCAL ou GITHUB, cf.
+;; section SOURCE DES CAMERAS ci-dessus). Ajouter/Supprimer restent en LOCAL
+;; via les fonctions non suffixees ci-dessus.
+
+(defun SC3D:CAM-MFR-LIST-ACTIVE (/ cams out)
+  (setq cams (SC3D:LOAD-CAMERAS-FROM (SC3D:ACTIVE-CFG-PATH)))
+  (setq out '("Manuel"))
+  (foreach cam cams
+    (setq out (append out (list (cdr (assoc 'manu cam)))))
+  )
+  (SC3D:UNIQUE out)
+)
+
+(defun SC3D:CAM-MODEL-LIST-ACTIVE (manu / cams out)
+  (if (= manu "Manuel")
+    '("Manuel")
+    (progn
+      (setq cams (SC3D:LOAD-CAMERAS-FROM (SC3D:ACTIVE-CFG-PATH)))
+      (setq out '())
+      (foreach cam cams
+        (if (= (cdr (assoc 'manu cam)) manu)
+          (setq out (append out (list (cdr (assoc 'model cam)))))
+        )
+      )
+      (if out out '("Manuel"))
+    )
+  )
+)
+
+(defun SC3D:FIND-CAMERA-ACTIVE (manu model / cams found)
+  (setq cams (SC3D:LOAD-CAMERAS-FROM (SC3D:ACTIVE-CFG-PATH)))
   (setq found nil)
   (foreach cam cams
     (if (and (= (cdr (assoc 'manu cam)) manu) (= (cdr (assoc 'model cam)) model))
@@ -2502,6 +2724,7 @@
 
   (write-line "    : boxed_column {" f)
   (write-line "      label = \"1. Camera\";" f)
+  (write-line "      : popup_list { key = \"source\"; label = \"Source des cameras\"; width = 38; }" f)
   (write-line "      : popup_list { key = \"manu\"; label = \"Fabricant\"; width = 38; }" f)
   (write-line "      : popup_list { key = \"model\"; label = \"Modele\"; width = 38; }" f)
   (write-line "      : edit_box { key = \"camname\"; label = \"Nom du champ (optionnel)\"; edit_width = 24; }" f)
@@ -2577,9 +2800,28 @@
 
 (defun SC3D:CAM-DLG-UPDATE-MODELS (/ manu)
   (setq manu (SC3D:CUR-MANU))
-  (setq *SC3D_MODEL_LIST* (SC3D:CAM-MODEL-LIST manu))
+  (setq *SC3D_MODEL_LIST* (SC3D:CAM-MODEL-LIST-ACTIVE manu))
   (SC3D:SET-POPUP-LIST "model" *SC3D_MODEL_LIST* (car *SC3D_MODEL_LIST*))
   (SC3D:CAM-DLG-APPLY)
+)
+
+(defun SC3D:CAM-DLG-SOURCE-CHANGED (/ src)
+  ;; Bascule Local/GitHub choisie dans la boite de dialogue : telecharge la
+  ;; liste GitHub si besoin, puis recharge fabricants/modeles depuis la source
+  ;; active. En cas d'echec de telechargement, on retombe sur le mode local.
+  (setq src (if (= (get_tile "source") "1") "GITHUB" "LOCAL"))
+  (set_tile "msg" "")
+  (if (and (= src "GITHUB") (not (SC3D:DOWNLOAD-GITHUB-CAMERAS)))
+    (progn
+      (set_tile "msg" "Impossible de recuperer la liste GitHub (connexion ?). Mode local conserve.")
+      (setq src "LOCAL")
+      (set_tile "source" "0")
+    )
+  )
+  (SC3D:SET-CAM-SOURCE src)
+  (setq *SC3D_MFR_LIST* (SC3D:CAM-MFR-LIST-ACTIVE))
+  (SC3D:SET-POPUP-LIST "manu" *SC3D_MFR_LIST* (car *SC3D_MFR_LIST*))
+  (SC3D:CAM-DLG-UPDATE-MODELS)
 )
 
 (defun SC3D:CAM-DLG-APPLY (/ manu model cam fmt res fmin fmax)
@@ -2588,7 +2830,7 @@
 
   (if (and (/= manu "Manuel") (/= model "Manuel"))
     (progn
-      (setq cam (SC3D:FIND-CAMERA manu model))
+      (setq cam (SC3D:FIND-CAMERA-ACTIVE manu model))
       (if cam
         (progn
           (setq fmt (cdr (assoc 'fmt cam)))
@@ -2661,7 +2903,7 @@
 
   (if (and (/= manu "Manuel") (/= model "Manuel"))
     (progn
-      (setq cam (SC3D:FIND-CAMERA manu model))
+      (setq cam (SC3D:FIND-CAMERA-ACTIVE manu model))
       (if cam
         (progn
           (setq fmin (cdr (assoc 'fmin cam)))
@@ -2699,7 +2941,23 @@
   (if (not (new_dialog "sc3d_dialog" id))
     nil
     (progn
-      (setq *SC3D_MFR_LIST* (SC3D:CAM-MFR-LIST))
+      (start_list "source")
+      (mapcar 'add_list *SC3D_CAM_SOURCE_LIST*)
+      (end_list)
+      (set_tile "source" (if (= (SC3D:CAM-SOURCE) "GITHUB") "1" "0"))
+
+      ;; Si la source persistee est GitHub, on tente le telechargement des
+      ;; l'ouverture de la boite de dialogue ; en cas d'echec on retombe sur
+      ;; le fichier local pour ne pas laisser des listes vides.
+      (if (and (= (SC3D:CAM-SOURCE) "GITHUB") (not (SC3D:DOWNLOAD-GITHUB-CAMERAS)))
+        (progn
+          (SC3D:SET-CAM-SOURCE "LOCAL")
+          (set_tile "source" "0")
+          (set_tile "msg" "Impossible de recuperer la liste GitHub (connexion ?). Mode local utilise.")
+        )
+      )
+
+      (setq *SC3D_MFR_LIST* (SC3D:CAM-MFR-LIST-ACTIVE))
 
       (start_list "manu")
       (mapcar 'add_list *SC3D_MFR_LIST*)
@@ -2733,7 +2991,7 @@
           (if (not model) (setq model "Manuel"))
 
           (set_tile "manu" (itoa (SC3D:INDEXOF manu *SC3D_MFR_LIST*)))
-          (setq *SC3D_MODEL_LIST* (SC3D:CAM-MODEL-LIST manu))
+          (setq *SC3D_MODEL_LIST* (SC3D:CAM-MODEL-LIST-ACTIVE manu))
           (SC3D:SET-POPUP-LIST "model" *SC3D_MODEL_LIST* model)
 
           (setq fmt (cdr (assoc 'fmt def)))
@@ -2794,6 +3052,7 @@
 
       (SC3D:CAM-DLG-APPLY)
 
+      (action_tile "source" "(SC3D:CAM-DLG-SOURCE-CHANGED)")
       (action_tile "manu" "(SC3D:CAM-DLG-UPDATE-MODELS)")
       (action_tile "model" "(SC3D:CAM-DLG-APPLY)")
       (action_tile "use_hatch" "(SC3D:DLG-HATCH-UPDATE)")
@@ -3765,7 +4024,7 @@
   (setq model (cdr (assoc 'model vals)))
   (if (and manu model (/= manu "Manuel") (/= model "Manuel"))
     (progn
-      (setq cam (SC3D:FIND-CAMERA manu model))
+      (setq cam (SC3D:FIND-CAMERA-ACTIVE manu model))
       (if cam
         (progn
           (setq fmin (cdr (assoc 'fmin cam)))
@@ -3786,7 +4045,7 @@
   (setq model (cdr (assoc 'model vals)))
   (if (and manu model (/= manu "Manuel") (/= model "Manuel"))
     (progn
-      (setq cam (SC3D:FIND-CAMERA manu model))
+      (setq cam (SC3D:FIND-CAMERA-ACTIVE manu model))
       (if cam
         (progn
           (setq fmin (cdr (assoc 'fmin cam)))
