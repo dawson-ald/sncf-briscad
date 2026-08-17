@@ -399,19 +399,21 @@
         (vl-file-delete *SMAJ:auto-result-file*)
       )
 
+      ;; On ne fait pas de (load p) ici : le fichier mis a jour est le bundle complet
+      ;; (header + toutes les commandes), donc le recharger en pleine session re-executerait
+      ;; tous ses formulaires de premier niveau (banniere, enregistrement des reactors, etc.)
+      ;; et donnerait l'impression que le script se charge deux fois. La mise a jour est deja
+      ;; ecrite sur disque ; elle prendra effet au prochain demarrage/rechargement.
       (setq nb 0)
 
       (foreach p updated
         (if (findfile p)
-          (progn
-            (setq nb (1+ nb))
-            (load p)
-          )
+          (setq nb (1+ nb))
         )
       )
 
       (if (> nb 0)
-        (princ "\nSNCF Outils : mise a jour installee et activee.")
+        (princ "\nSNCF Outils : mise a jour telechargee, elle sera active au prochain demarrage de BricsCAD.")
       )
 
       (SMAJ:auto-stop-poll)
