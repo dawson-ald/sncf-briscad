@@ -11579,7 +11579,3 @@ Image source utilisee : " path))
 
 
 
-;; ------------------------------------------------------------------------------------ AUTO MAJ AU CHARGEMENT ------------------------------------------------------------------------------------
-;; Execute en tout dernier (apres la definition de toutes les commandes) afin d'eviter
-;; qu'un rechargement du script pendant sa propre lecture n'ecrase la nouvelle version.
-(SMAJ:check-update-on-load)
