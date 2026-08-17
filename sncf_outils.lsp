@@ -125,7 +125,7 @@
   s
 )
 
-(defun SMAJ:run-powershell-update (dfsFiles resultFile / psFile ps f shell rc dfsList)
+(defun SMAJ:run-powershell-update (dfsFiles resultFile wait / psFile ps f shell rc dfsList)
   (setq psFile (strcat (getenv "TEMP") "\\sncf_maj_update.ps1"))
   (setq dfsList (SMAJ:make-ps-list dfsFiles))
 
@@ -299,13 +299,13 @@
             "\""
           )
           0
-          :vlax-true
+          (if wait :vlax-true :vlax-false)
         )
       )
 
       (vlax-release-object shell)
 
-      rc
+      (if wait rc 0)
     )
     -1
   )
@@ -343,7 +343,7 @@
     (progn
       (princ "\nMise a jour en cours...")
 
-      (setq rc (SMAJ:run-powershell-update dfsFiles resultFile))
+      (setq rc (SMAJ:run-powershell-update dfsFiles resultFile T))
 
       (if (/= rc 0)
         (progn
@@ -376,6 +376,24 @@
 
   (princ)
 )
+
+(defun SMAJ:auto-update (/ dfsFiles resultFile)
+  (setq dfsFiles (SMAJ:find-appload-dfs))
+
+  (if dfsFiles
+    (progn
+      (setq resultFile (strcat (getenv "TEMP") "\\sncf_maj_updated.txt"))
+      (SMAJ:run-powershell-update dfsFiles resultFile nil)
+    )
+  )
+
+  (princ)
+)
+
+;; Mise a jour silencieuse et non bloquante a chaque chargement du script.
+;; Les fichiers locaux sont rafraichis en arriere-plan ; ils seront pris
+;; en compte au prochain chargement (redemarrage de BricsCAD).
+(SMAJ:auto-update)
 
 ;; ------------------------------------------------------------------------------------ F_UTILS ------------------------------------------------------------------------------------
 
