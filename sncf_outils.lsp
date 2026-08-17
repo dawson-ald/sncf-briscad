@@ -125,7 +125,7 @@
   s
 )
 
-(defun SMAJ:run-powershell-update (dfsFiles resultFile / psFile ps f shell rc dfsList)
+(defun SMAJ:run-powershell-update (dfsFiles resultFile wait / psFile ps f shell rc dfsList)
   (setq psFile (strcat (getenv "TEMP") "\\sncf_maj_update.ps1"))
   (setq dfsList (SMAJ:make-ps-list dfsFiles))
 
@@ -299,7 +299,7 @@
             "\""
           )
           0
-          :vlax-true
+          (if wait :vlax-true :vlax-false)
         )
       )
 
@@ -347,7 +347,7 @@
         (princ "\nVerification des mises a jour...")
       )
 
-      (setq rc (SMAJ:run-powershell-update dfsFiles resultFile))
+      (setq rc (SMAJ:run-powershell-update dfsFiles resultFile T))
 
       (if (/= rc 0)
         (if (not silent)
@@ -389,8 +389,75 @@
   (SMAJ:do-update nil)
 )
 
+;; ----- Verification au chargement, sans bloquer BricsCAD -----
+;; La verification/telechargement tourne dans un processus PowerShell separe (nowait).
+;; Un reactor de commande verifie discretement, a chaque commande lancee par l'utilisateur,
+;; si le resultat est pret, sans jamais mettre BricsCAD en attente.
+
+(defun SMAJ:poll-apply-update (/ updated p nb)
+  (setq updated (SMAJ:read-lines-as-list *SMAJ-poll-resultfile*))
+  (setq nb 0)
+
+  (foreach p updated
+    (if (findfile p)
+      (progn
+        (setq nb (1+ nb))
+        (load p)
+      )
+    )
+  )
+
+  (if (> nb 0)
+    (princ "\nSNCF Outils : une difference a ete detectee avec GitHub, mise a jour appliquee automatiquement.\n")
+  )
+
+  (princ)
+)
+
+(defun SMAJ:poll-callback (reactor args)
+  (setq *SMAJ-poll-tries* (1+ *SMAJ-poll-tries*))
+
+  (cond
+    ((findfile *SMAJ-poll-resultfile*)
+      (vlr-remove *SMAJ-poll-reactor*)
+      (setq *SMAJ-poll-reactor* nil)
+      (SMAJ:poll-apply-update)
+    )
+    ((> *SMAJ-poll-tries* 200)
+      (vlr-remove *SMAJ-poll-reactor*)
+      (setq *SMAJ-poll-reactor* nil)
+    )
+  )
+
+  (princ)
+)
+
+(defun SMAJ:start-check-update-on-load (/ dfsFiles)
+  (setq dfsFiles (SMAJ:find-appload-dfs))
+
+  (if dfsFiles
+    (progn
+      (setq *SMAJ-poll-resultfile* (strcat (getenv "TEMP") "\\sncf_maj_updated.txt"))
+      (setq *SMAJ-poll-tries* 0)
+
+      ;; wait = nil : lance PowerShell en arriere-plan, retour immediat (pas d'attente)
+      (SMAJ:run-powershell-update dfsFiles *SMAJ-poll-resultfile* nil)
+
+      (if *SMAJ-poll-reactor*
+        (vlr-remove *SMAJ-poll-reactor*)
+      )
+
+      (setq *SMAJ-poll-reactor*
+        (vlr-command-reactor nil (list (cons :vlr-commandWillStart 'SMAJ:poll-callback)))
+      )
+    )
+  )
+
+  (princ)
+)
+
 (defun SMAJ:check-update-on-load ()
-  (vl-catch-all-apply 'SMAJ:do-update (list T))
+  (vl-catch-all-apply 'SMAJ:start-check-update-on-load nil)
   (princ)
 )
 
