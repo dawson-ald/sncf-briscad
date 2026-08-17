@@ -1953,6 +1953,10 @@
 ;; persiste entre sessions via setenv/getenv (cf. SC3D:INIT-CAM-SOURCE).
 (setq *SC3D_GITHUB_CFG_URL* "https://raw.githubusercontent.com/dawson-ald/sncf-briscad/main/camera.config")
 (setq *SC3D_CAM_SOURCE_LIST* '("Local (camera.config)" "GitHub (sncf-briscad)"))
+;; Detail de la derniere erreur de telechargement GitHub (cf.
+;; SC3D:DOWNLOAD-VIA-POWERSHELL), affiche dans la boite de dialogue et sur la
+;; ligne de commande pour diagnostiquer un echec (au lieu d'un message generique).
+(setq *SC3D_LAST_DL_ERROR* nil)
 
 (setq *SC3D_SENSOR_LIST*
   '(
@@ -2315,12 +2319,26 @@
   out
 )
 
+(defun SC3D:READ-FILE-TEXT (path / f line txt)
+  (setq txt "")
+  (if (setq f (open path "r"))
+    (progn
+      (while (setq line (read-line f))
+        (setq txt (strcat txt (if (= txt "") "" " ") line))
+      )
+      (close f)
+    )
+  )
+  (vl-string-trim " \t\r\n" txt)
+)
+
 (defun SC3D:DOWNLOAD-VIA-POWERSHELL (url outFile / psFile errorFile ps f shell rc ok)
   ;; Telecharge `url` vers `outFile` via un script PowerShell externe
   ;; (WebClient + proxy systeme + identifiants Windows par defaut), a
   ;; l'identique de SMAJ:run-powershell-update dans F_MAJ.lsp. Un appel HTTP
   ;; direct depuis BricsCAD (MSXML2) est bloque par le reseau interne SNCF ;
   ;; passer par un process PowerShell externe contourne ce blocage.
+  (setq *SC3D_LAST_DL_ERROR* nil)
   (setq psFile (strcat (getenv "TEMP") "\\sc3d_camera_dl.ps1"))
   (setq errorFile (strcat (getenv "TEMP") "\\sc3d_camera_dl_error.txt"))
 
@@ -2373,7 +2391,21 @@
       (vlax-release-object shell)
 
       (setq ok (and (= rc 0) (findfile outFile)))
+
+      (if (not ok)
+        (setq *SC3D_LAST_DL_ERROR*
+          (cond
+            ((findfile errorFile) (SC3D:READ-FILE-TEXT errorFile))
+            ((/= rc 0) (strcat "Le script PowerShell a echoue (code retour " (itoa rc) ")."))
+            (T "Fichier telecharge introuvable apres execution du script.")
+          )
+        )
+      )
     )
+    (setq *SC3D_LAST_DL_ERROR* "Impossible de creer le script PowerShell temporaire.")
+  )
+  (if *SC3D_LAST_DL_ERROR*
+    (princ (strcat "\nSC3D GitHub download error: " *SC3D_LAST_DL_ERROR*))
   )
   ok
 )
@@ -2780,7 +2812,13 @@
   (set_tile "msg" "")
   (if (and (= src "GITHUB") (not (SC3D:DOWNLOAD-GITHUB-CAMERAS)))
     (progn
-      (set_tile "msg" "Impossible de recuperer la liste GitHub (connexion ?). Mode local conserve.")
+      (set_tile "msg"
+        (strcat
+          "Impossible de recuperer la liste GitHub"
+          (if *SC3D_LAST_DL_ERROR* (strcat " : " *SC3D_LAST_DL_ERROR*) " (connexion ?).")
+          " Mode local conserve."
+        )
+      )
       (setq src "LOCAL")
       (set_tile "source" "0")
     )
@@ -2920,7 +2958,13 @@
         (progn
           (SC3D:SET-CAM-SOURCE "LOCAL")
           (set_tile "source" "0")
-          (set_tile "msg" "Impossible de recuperer la liste GitHub (connexion ?). Mode local utilise.")
+          (set_tile "msg"
+            (strcat
+              "Impossible de recuperer la liste GitHub"
+              (if *SC3D_LAST_DL_ERROR* (strcat " : " *SC3D_LAST_DL_ERROR*) " (connexion ?).")
+              " Mode local utilise."
+            )
+          )
         )
       )
 
