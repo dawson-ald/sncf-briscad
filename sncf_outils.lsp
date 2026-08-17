@@ -2358,12 +2358,32 @@
       "  $wc.Proxy = [System.Net.WebRequest]::GetSystemWebProxy()\n"
       "  $wc.Proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials\n"
       "  $wc.Headers.Add('User-Agent','Mozilla/5.0 SNCF-CAMERA')\n"
+      "  $wc.Headers.Add('Accept','application/vnd.github+json')\n"
       "  $wc.Headers.Add('Cache-Control','no-cache, no-store, must-revalidate')\n"
       "  $wc.Headers.Add('Pragma','no-cache')\n"
-      "  $nonce = [Guid]::NewGuid().ToString()\n"
-      "  $sep = if ($url.Contains('?')) { '&' } else { '?' }\n"
-      "  $reqUrl = $url + $sep + 'nocache=' + $nonce\n"
-      "  $txt = $wc.DownloadString($reqUrl)\n"
+
+      ;; raw.githubusercontent.com est servi par un CDN (Fastly) qui met en
+      ;; cache par chemin en ignorant la query string : ajouter un parametre
+      ;; ?nocache=... ne suffit pas a obtenir la derniere version. On resout
+      ;; d'abord le SHA du dernier commit touchant ce fichier via l'API GitHub
+      ;; (non mise en cache par ce CDN), puis on telecharge le contenu via une
+      ;; URL adressee par ce SHA : cette URL change a chaque commit, donc le
+      ;; cache du CDN ne peut jamais renvoyer une ancienne version pour elle.
+      "  $m = [regex]::Match($url, '^https://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/([^/]+)/(.+)$')\n"
+      "  if (-not $m.Success) { throw 'URL GitHub raw invalide.' }\n"
+      "  $owner = $m.Groups[1].Value\n"
+      "  $repo = $m.Groups[2].Value\n"
+      "  $branch = $m.Groups[3].Value\n"
+      "  $filePath = $m.Groups[4].Value\n"
+
+      "  $apiUrl = \"https://api.github.com/repos/$owner/$repo/commits?path=$filePath&sha=$branch&per_page=1\"\n"
+      "  $commitsJson = $wc.DownloadString($apiUrl)\n"
+      "  $commits = $commitsJson | ConvertFrom-Json\n"
+      "  if (-not $commits -or $commits.Count -lt 1) { throw 'Impossible de recuperer le dernier commit GitHub pour ce fichier.' }\n"
+      "  $sha = $commits[0].sha\n"
+
+      "  $rawUrl = \"https://raw.githubusercontent.com/$owner/$repo/$sha/$filePath\"\n"
+      "  $txt = $wc.DownloadString($rawUrl)\n"
       "  if ([string]::IsNullOrWhiteSpace($txt)) { throw 'Contenu vide ou introuvable.' }\n"
       "  [System.IO.File]::WriteAllText($outFile, $txt, [System.Text.Encoding]::UTF8)\n"
       "} catch {\n"
@@ -2416,14 +2436,6 @@
 (defun SC3D:DOWNLOAD-GITHUB-CAMERAS ()
   (SC3D:DOWNLOAD-VIA-POWERSHELL *SC3D_GITHUB_CFG_URL* (SC3D:GITHUB-CFG-PATH))
 )
-
-;; A chaque chargement du script, on supprime le cache local
-;; (sc3d_camera_github.config) et on le recree en retelechargeant la liste
-;; GitHub, pour ne jamais partir sur une copie perimee laissee par une
-;; session precedente. vl-catch-all-apply evite qu'un echec reseau au
-;; chargement (PowerShell/proxy indisponible) interrompe le chargement du
-;; reste du script.
-(vl-catch-all-apply 'SC3D:DOWNLOAD-GITHUB-CAMERAS)
 
 (defun SC3D:READ-LINES (path / f line out)
   (setq out '())
