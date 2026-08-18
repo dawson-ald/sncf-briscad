@@ -6042,6 +6042,10 @@
 (setq *SC3D_A4_H* 297.0)
 (setq *SC3D_VP_MARGIN* 10.0)
 (setq *SC3D_PAGE_MARGIN* 13.0)
+;; Largeurs des 3 volets (mm) : legende + situation existante + situation
+;; projetee = 197.0 + 203.5 + 203.5 = 604.0 = zone utile (630 - 2*13 marges).
+(setq *SC3D_LEGEND_PANEL_W* 197.0)
+(setq *SC3D_SIT_PANEL_W* 203.5)
 (setq *SC3D_EXPORT_ZOOM* 10.0)
 (setq *SC3D_CV_COUNTER* 0)
 
@@ -6328,23 +6332,23 @@
   mt
 )
 
-(defun SC3D:DRAW-A4-FRAMES (layout cw uh)
+(defun SC3D:DRAW-A4-FRAMES (layout w1 w2 w3 uh)
   ;; Trois cadres cote a cote, entierement DANS la zone imprimable (l'origine
-  ;; (0,0) de l'espace papier est au coin de cette zone) : chaque volet fait un
-  ;; tiers de la zone utile.
+  ;; (0,0) de l'espace papier est au coin de cette zone) : largeurs propres a
+  ;; chaque volet (legende / situation existante / situation projetee).
   (SC3D:LAYER "SC3D_CADRE" 7)
-  (SC3D:PS-RECT layout 0.0 0.0 cw uh)
-  (SC3D:PS-RECT layout cw 0.0 (* 2.0 cw) uh)
-  (SC3D:PS-RECT layout (* 2.0 cw) 0.0 (* 3.0 cw) uh)
+  (SC3D:PS-RECT layout 0.0 0.0 w1 uh)
+  (SC3D:PS-RECT layout w1 0.0 (+ w1 w2) uh)
+  (SC3D:PS-RECT layout (+ w1 w2) 0.0 (+ w1 w2 w3) uh)
 )
 
-(defun SC3D:EXPORT-MAKE-LAYOUT (baseName legendBox existRec projRec camMrg / doc name layout uw uh cw vpW vpH midY titY infoY sitE lblE lw lh k lcx lcy lhw lhh evVals pvVals)
+(defun SC3D:EXPORT-MAKE-LAYOUT (baseName legendBox existRec projRec camMrg / doc name layout uw uh w1 w2 w3 c1 c2 c3 vpW vpH midY titY infoY sitE lblE evVals pvVals)
   ;; Cree une presentation en 3 volets, ENTIEREMENT dans la zone imprimable
   ;; (papier 630 x 297 paysage, marges 13 mm -> zone utile 604 x 271 ; l'origine
   ;; (0,0) de l'espace papier correspond au coin de cette zone) :
-  ;;   volet 1 : legende (toutes les cameras gelees)
-  ;;   volet 2 : situation existante (ou camera seule) - toutes les autres gelees
-  ;;   volet 3 : situation projetee, cadree sur son propre champ de vision
+  ;;   volet 1 : legende (toutes les cameras gelees) - largeur *SC3D_LEGEND_PANEL_W*
+  ;;   volet 2 : situation existante (ou camera seule) - largeur *SC3D_SIT_PANEL_W*
+  ;;   volet 3 : situation projetee, cadree sur son propre champ de vision - largeur *SC3D_SIT_PANEL_W*
   ;; Les cadres, les titres et les fenetres restent tous dans la zone imprimable.
   (setq doc (SC3D:ACAD-DOC))
   (setq name (SC3D:UNIQUE-LAYOUT-NAME baseName))
@@ -6362,16 +6366,23 @@
   ;; Mise en page : papier 630 x 297 paysage, marges 13 mm.
   (SC3D:SET-LAYOUT-PAPER layout)
 
-  ;; Zone imprimable et largeur d'un volet (un tiers de la zone utile).
+  ;; Zone imprimable et largeurs des volets (legende / situation existante /
+  ;; situation projetee) : 197.0 + 203.5 + 203.5 = 604.0 = zone utile, chaque
+  ;; volet reste donc colle a ses voisins et centre sur sa propre largeur.
   (setq uw (- 630.0 (* 2.0 *SC3D_PAGE_MARGIN*)))
   (setq uh (- 297.0 (* 2.0 *SC3D_PAGE_MARGIN*)))
-  (setq cw (/ uw 3.0))
+  (setq w1 *SC3D_LEGEND_PANEL_W*)
+  (setq w2 *SC3D_SIT_PANEL_W*)
+  (setq w3 *SC3D_SIT_PANEL_W*)
+  (setq c1 (/ w1 2.0))
+  (setq c2 (+ w1 (/ w2 2.0)))
+  (setq c3 (+ w1 w2 (/ w3 2.0)))
 
-  (SC3D:DRAW-A4-FRAMES layout cw uh)
+  (SC3D:DRAW-A4-FRAMES layout w1 w2 w3 uh)
 
-  ;; Fenetres : marge interieure de 10 mm, plus une bande de 8 mm reservee en
-  ;; haut de chaque volet pour le titre.
-  (setq vpW (- cw (* 2.0 *SC3D_VP_MARGIN*)))
+  ;; Fenetres des volets 2 et 3 : marge interieure de 10 mm, plus une bande de
+  ;; 8 mm reservee en haut pour le titre (w2 = w3, une seule largeur utile).
+  (setq vpW (- w2 (* 2.0 *SC3D_VP_MARGIN*)))
   (setq vpH (- uh (* 2.0 *SC3D_VP_MARGIN*) 8.0))
   (setq midY (+ *SC3D_VP_MARGIN* (/ vpH 2.0)))
   (setq titY (- uh 6.0))
@@ -6388,45 +6399,27 @@
     )
   )
   (if lblE
-    (SC3D:PS-TEXT layout (* 1.5 cw) titY 5.0 (strcat lblE " - " baseName))
+    (SC3D:PS-TEXT layout c2 titY 5.0 (strcat lblE " - " baseName))
   )
   (if projRec
-    (SC3D:PS-TEXT layout (* 2.5 cw) titY 5.0 (strcat "Situation projet\\U+00E9e - " baseName))
+    (SC3D:PS-TEXT layout c3 titY 5.0 (strcat "Situation projet\\U+00E9e - " baseName))
   )
 
-  ;; Volet 1 : legende. La fenetre occupe TOUT le volet (meme taille que les
-  ;; fenetres 2 et 3, vpW x vpH) mais la vue garde EXACTEMENT la meme echelle
-  ;; que si elle etait cadree pile sur la zone choisie (k = plus grand facteur
-  ;; qui fait tenir la zone dans vpW x vpH en conservant son ratio) : on ne
-  ;; touche pas a cette echelle, on agrandit seulement la fenetre autour du
-  ;; centre de la zone -> le cadrage/l'echelle (la "vue") n'est pas modifie,
-  ;; seule la taille de la fenetre l'est.
+  ;; Volet 1 : legende
   (if legendBox
-    (progn
-      (setq lw (- (car (cadr legendBox)) (car (car legendBox))))
-      (setq lh (- (cadr (cadr legendBox)) (cadr (car legendBox))))
-      (if (< lw 0.001) (setq lw 0.001))
-      (if (< lh 0.001) (setq lh 0.001))
-      (setq k (SC3D:MIN (/ vpW lw) (/ vpH lh)))
-      (setq lcx (/ (+ (car (car legendBox)) (car (cadr legendBox))) 2.0))
-      (setq lcy (/ (+ (cadr (car legendBox)) (cadr (cadr legendBox))) 2.0))
-      (setq lhw (/ vpW (* 2.0 k)))
-      (setq lhh (/ vpH (* 2.0 k)))
-      (SC3D:ADD-VIEWPORT layout
-        (/ cw 2.0) midY
-        vpW vpH
-        (list (- lcx lhw) (- lcy lhh) 0.0)
-        (list (+ lcx lhw) (+ lcy lhh) 0.0)
-        0.0
-        nil
-        nil
-      )
+    (SC3D:ADD-VIEWPORT layout
+      c1 (/ uh 2.0)
+      w1 uh
+      (car legendBox) (cadr legendBox)
+      0.0
+      nil
+      nil
     )
   )
 
   ;; Volet 2 : situation existante (ou camera seule) : seul son calque reste degele.
   (SC3D:ADD-VIEWPORT layout
-    (* 1.5 cw) midY
+    c2 midY
     vpW vpH
     (cdr (assoc 'bmin existRec)) (cdr (assoc 'bmax existRec))
     camMrg
@@ -6437,7 +6430,7 @@
   ;; Sous la fenetre : modele, capteur, focale, definition et angle de la camera.
   (setq evVals (cdr (assoc 'vals existRec)))
   (if evVals
-    (SC3D:PS-TEXT layout (* 1.5 cw) infoY 2.75 (SC3D:CAM-INFO-TEXT evVals))
+    (SC3D:PS-TEXT layout c2 infoY 2.75 (SC3D:CAM-INFO-TEXT evVals))
   )
 
   ;; Volet 3 : situation projetee, cadree sur SON emprise, a l'endroit ou elle est
@@ -6446,7 +6439,7 @@
   (if projRec
     (progn
       (SC3D:ADD-VIEWPORT layout
-        (* 2.5 cw) midY
+        c3 midY
         vpW vpH
         (cdr (assoc 'bmin projRec)) (cdr (assoc 'bmax projRec))
         camMrg
@@ -6455,7 +6448,7 @@
       )
       (setq pvVals (cdr (assoc 'vals projRec)))
       (if pvVals
-        (SC3D:PS-TEXT layout (* 2.5 cw) infoY 2.75 (SC3D:CAM-INFO-TEXT pvVals))
+        (SC3D:PS-TEXT layout c3 infoY 2.75 (SC3D:CAM-INFO-TEXT pvVals))
       )
     )
   )
