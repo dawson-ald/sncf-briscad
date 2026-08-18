@@ -4239,244 +4239,6 @@
   )
 )
 
-;; ------------------------------------------------------------------------------------
-;; PROPRIETES RAPIDES (ATTRIBUTS DE BLOC)
-;; Un sous-ensemble des parametres (distance, hauteurs, focale, affichage, nom/situation)
-;; est duplique sous forme d'attributs invisibles sur chaque INSERT camera, afin d'etre
-;; visible et modifiable directement dans le panneau Proprietes de BricsCAD (categorie
-;; "Attributs"), sans passer par S_CAMERA > Modifier. Un reacteur de commande
-;; (SC3D:CAM-START-REACTOR, en fin de fichier) detecte les valeurs d'attribut modifiees
-;; apres chaque commande et regenere alors la camera concernee a partir de ces valeurs
-;; (meme mecanisme de suppression/recreation que SC3D:CMD-MODIFIER).
-;; ------------------------------------------------------------------------------------
-
-(defun SC3D:CAMERA-ATTR-SPECS ()
-  (list
-    (list "DIST"      "Distance max (m)")
-    (list "CAMH"      "Hauteur camera (m)")
-    (list "OBJH"      "Hauteur objectif (m)")
-    (list "FOCAL"     "Focale (mm)")
-    (list "TRANS"     "Transparence % (0-90)")
-    (list "GRID"      "Grille (Oui/Non)")
-    (list "SHOWDIST"  "Metres dans l'axe (Oui/Non)")
-    (list "VUE"       "Vue (Vue du dessus/Vue de cote)")
-    (list "NOM"       "Nom du champ de vision")
-    (list "SITUATION" "Situation (Aucune/Existante/Projetee)")
-  )
-)
-
-(defun SC3D:BOOL->OUINON (b)
-  (if b "Oui" "Non")
-)
-
-(defun SC3D:OUINON->BOOL (s)
-  (= (strcase (vl-string-trim " \t" (if s s ""))) "OUI")
-)
-
-(defun SC3D:CAMERA-ATTR-VALUES (vals)
-  (list
-    (cons "DIST"      (rtos (cdr (assoc 'dist vals)) 2 2))
-    (cons "CAMH"      (rtos (cdr (assoc 'camh vals)) 2 2))
-    (cons "OBJH"      (rtos (cdr (assoc 'objh vals)) 2 2))
-    (cons "FOCAL"     (rtos (cdr (assoc 'focal vals)) 2 2))
-    (cons "TRANS"     (rtos (cdr (assoc 'trans vals)) 2 0))
-    (cons "GRID"      (SC3D:BOOL->OUINON (cdr (assoc 'grid vals))))
-    (cons "SHOWDIST"  (SC3D:BOOL->OUINON (if (assoc 'show_dist vals) (cdr (assoc 'show_dist vals)) T)))
-    (cons "VUE"       (SC3D:VIEW-CODE->LABEL (cdr (assoc 'view vals))))
-    (cons "NOM"       (if (cdr (assoc 'cvname vals)) (cdr (assoc 'cvname vals)) ""))
-    (cons "SITUATION" (SC3D:SIT-CODE->LABEL (cdr (assoc 'situation vals))))
-  )
-)
-
-(defun SC3D:ADD-CAMERA-ATTDEFS (vals / attrVals spec tag prompt val)
-  ;; Un ATTDEF par parametre rapide, dans la definition de bloc (invisible : n'apparait
-  ;; pas dans le dessin, mais reste liste et editable dans le panneau Proprietes).
-  (setq attrVals (SC3D:CAMERA-ATTR-VALUES vals))
-  (foreach spec (SC3D:CAMERA-ATTR-SPECS)
-    (setq tag (nth 0 spec))
-    (setq prompt (nth 1 spec))
-    (setq val (cdr (assoc tag attrVals)))
-    (entmake
-      (list
-        (cons 0 "ATTDEF")
-        (cons 100 "AcDbEntity")
-        (cons 8 "0")
-        (cons 100 "AcDbText")
-        (cons 10 '(0.0 0.0 0.0))
-        (cons 40 0.001)
-        (cons 1 val)
-        (cons 50 0.0)
-        (cons 41 1.0)
-        (cons 51 0.0)
-        (cons 7 "Standard")
-        (cons 71 0)
-        (cons 72 0)
-        (cons 11 '(0.0 0.0 0.0))
-        (cons 100 "AcDbAttributeDefinition")
-        (cons 280 0)
-        (cons 3 prompt)
-        (cons 2 tag)
-        (cons 70 1)
-        (cons 74 0)
-      )
-    )
-  )
-)
-
-(defun SC3D:ADD-CAMERA-ATTRIBS (vals / attrVals spec tag prompt val)
-  ;; Un ATTRIB par parametre rapide, attache a l'INSERT (doit suivre l'entete INSERT
-  ;; avec le flag 66=1, et etre suivi d'un SEQEND : cf. SC3D:INSERT-CAMERA-BLOCK).
-  (setq attrVals (SC3D:CAMERA-ATTR-VALUES vals))
-  (foreach spec (SC3D:CAMERA-ATTR-SPECS)
-    (setq tag (nth 0 spec))
-    (setq prompt (nth 1 spec))
-    (setq val (cdr (assoc tag attrVals)))
-    (entmake
-      (list
-        (cons 0 "ATTRIB")
-        (cons 100 "AcDbEntity")
-        (cons 8 "0")
-        (cons 100 "AcDbText")
-        (cons 10 '(0.0 0.0 0.0))
-        (cons 40 0.001)
-        (cons 1 val)
-        (cons 50 0.0)
-        (cons 41 1.0)
-        (cons 51 0.0)
-        (cons 7 "Standard")
-        (cons 71 0)
-        (cons 72 0)
-        (cons 11 '(0.0 0.0 0.0))
-        (cons 100 "AcDbAttribute")
-        (cons 280 0)
-        (cons 2 tag)
-        (cons 70 1)
-        (cons 74 0)
-      )
-    )
-  )
-)
-
-(defun SC3D:INSERT-CAMERA-BLOCK (blockName layer pt rot vals / ins)
-  (entmake
-    (list
-      '(0 . "INSERT")
-      (cons 8 layer)
-      (cons 2 blockName)
-      (cons 10 pt)
-      '(41 . 1.0)
-      '(42 . 1.0)
-      '(43 . 1.0)
-      (cons 50 rot)
-      '(66 . 1)
-    )
-  )
-  (setq ins (entlast))
-  (SC3D:ADD-CAMERA-ATTRIBS vals)
-  (entmake '((0 . "SEQEND")))
-  ins
-)
-
-(defun SC3D:READ-CAMERA-ATTRIBS (e / en ed out)
-  (setq out '())
-  (setq en (entnext e))
-  (while (and en (/= (cdr (assoc 0 (setq ed (entget en)))) "SEQEND"))
-    (if (= (cdr (assoc 0 ed)) "ATTRIB")
-      (setq out (append out (list (cons (cdr (assoc 2 ed)) (cdr (assoc 1 ed))))))
-    )
-    (setq en (entnext en))
-  )
-  out
-)
-
-(defun SC3D:CAM-ATTR-OVERRIDE (oldVals attrVals / out s v)
-  ;; Reconstruit un jeu de valeurs a partir de oldVals (config xdata actuelle), en
-  ;; substituant les champs rapides par leur valeur d'attribut si elle est presente
-  ;; et valide (une valeur invalide ou vide est simplement ignoree : l'ancienne valeur
-  ;; xdata est conservee, pour ne jamais faire planter le calcul geometrique).
-  (setq out oldVals)
-
-  (setq s (cdr (assoc "DIST" attrVals)))
-  (if s
-    (progn
-      (setq v (SC3D:ATOF s -1.0))
-      (if (> v 0.0) (setq out (SC3D:SETVAL out 'dist v)))
-    )
-  )
-
-  (setq s (cdr (assoc "CAMH" attrVals)))
-  (if s
-    (progn
-      (setq v (SC3D:ATOF s -1.0))
-      (if (>= v 0.0) (setq out (SC3D:SETVAL out 'camh v)))
-    )
-  )
-
-  (setq s (cdr (assoc "OBJH" attrVals)))
-  (if s
-    (progn
-      (setq v (SC3D:ATOF s -1.0))
-      (if (>= v 0.0) (setq out (SC3D:SETVAL out 'objh v)))
-    )
-  )
-
-  (setq s (cdr (assoc "FOCAL" attrVals)))
-  (if s
-    (progn
-      (setq v (SC3D:ATOF s -1.0))
-      (if (> v 0.0) (setq out (SC3D:SETVAL out 'focal v)))
-    )
-  )
-
-  (setq s (cdr (assoc "TRANS" attrVals)))
-  (if s
-    (progn
-      (setq v (SC3D:ATOF s -1.0))
-      (if (>= v 0.0)
-        (progn
-          (if (> v 90.0) (setq v 90.0))
-          (setq out (SC3D:SETVAL out 'trans v))
-        )
-      )
-    )
-  )
-
-  (setq s (cdr (assoc "GRID" attrVals)))
-  (if s (setq out (SC3D:SETVAL out 'grid (SC3D:OUINON->BOOL s))))
-
-  (setq s (cdr (assoc "SHOWDIST" attrVals)))
-  (if s (setq out (SC3D:SETVAL out 'show_dist (SC3D:OUINON->BOOL s))))
-
-  (setq s (cdr (assoc "VUE" attrVals)))
-  (if s (setq out (SC3D:SETVAL out 'view (SC3D:VIEW-LABEL->CODE s))))
-
-  (setq s (cdr (assoc "NOM" attrVals)))
-  (if s (setq out (SC3D:SETVAL out 'cvname (SC3D:CLEAN-NAME s))))
-
-  (setq s (cdr (assoc "SITUATION" attrVals)))
-  (if s (setq out (SC3D:SETVAL out 'situation (SC3D:SIT-LABEL->CODE s))))
-
-  out
-)
-
-(defun SC3D:CAM-VALS-DIFFER-P (a b / keys k va vb diff)
-  (setq keys '(dist camh objh focal trans grid show_dist view cvname situation))
-  (setq diff nil)
-  (foreach k keys
-    (setq va (cdr (assoc k a)))
-    (setq vb (cdr (assoc k b)))
-    (cond
-      ((and (numberp va) (numberp vb))
-        (if (> (abs (- va vb)) 0.001) (setq diff T))
-      )
-      (T
-        (if (/= va vb) (setq diff T))
-      )
-    )
-  )
-  diff
-)
-
 (defun SC3D:CREATE-BLOCK-GEOM (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD useHatch hatchPat hatchCol hidden showDist)
   (setq maxD     (cdr (assoc 'dist vals)))
   (setq camH     (cdr (assoc 'camh vals)))
@@ -4503,7 +4265,6 @@
   (if (> trans 90.0) (setq trans 90.0))
 
   (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
-  (SC3D:ADD-CAMERA-ATTDEFS vals)
 
   (if hidden
     ;; Camera masquee : seule la zone non visible (angle mort pres de la camera) reste affichee.
@@ -4777,7 +4538,6 @@
   (if (> trans 90.0) (setq trans 90.0))
 
   (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
-  (SC3D:ADD-CAMERA-ATTDEFS vals)
 
   (if hidden
     ;; Camera masquee : seule la zone non visible (angle mort pres de la camera) reste affichee.
@@ -4939,7 +4699,20 @@
 
   (SC3D:CREATE-BLOCK-GEOM blockName vals calc)
 
-  (setq ins (SC3D:INSERT-CAMERA-BLOCK blockName camLayer *SC3D_BASE* *SC3D_ROT* vals))
+  (setq ins
+    (entmakex
+      (list
+        '(0 . "INSERT")
+        (cons 8 camLayer)
+        (cons 2 blockName)
+        (cons 10 *SC3D_BASE*)
+        '(41 . 1.0)
+        '(42 . 1.0)
+        '(43 . 1.0)
+        (cons 50 *SC3D_ROT*)
+      )
+    )
+  )
 
   ;; Calque dedie a cette camera (par champ de vision) : gere directement a la
   ;; creation, sans attendre l'export (cf. SC3D:CAM-LAYER-ASSIGN).
@@ -4979,7 +4752,20 @@
 
   (SC3D:CREATE-BLOCK-GEOM-SIDE blockName vals calc)
 
-  (setq ins (SC3D:INSERT-CAMERA-BLOCK blockName camLayer *SC3D_BASE* *SC3D_ROT* vals))
+  (setq ins
+    (entmakex
+      (list
+        '(0 . "INSERT")
+        (cons 8 camLayer)
+        (cons 2 blockName)
+        (cons 10 *SC3D_BASE*)
+        '(41 . 1.0)
+        '(42 . 1.0)
+        '(43 . 1.0)
+        (cons 50 *SC3D_ROT*)
+      )
+    )
+  )
 
   ;; Calque dedie a cette camera (par champ de vision) : gere directement a la
   ;; creation, sans attendre l'export (cf. SC3D:CAM-LAYER-ASSIGN).
@@ -5215,95 +5001,6 @@
   )
 
   (princ)
-)
-
-(defun SC3D:CAM-SYNC-FROM-ATTRIBS (e / ed cfg oldVals attrVals newVals base oldRot clip newE)
-  ;; Reprend le mecanisme de suppression/recreation de SC3D:CMD-MODIFIER, mais a
-  ;; partir des valeurs d'attribut actuelles au lieu de la boite de dialogue.
-  ;; Appelee par le reacteur de commande (SC3D:CAM-CMD-REACTOR) quand une valeur
-  ;; d'attribut a change depuis le panneau Proprietes.
-  (setq ed (entget e))
-  (if (and ed (= (cdr (assoc 0 ed)) "INSERT") (setq cfg (SC3D:GET-XDATA e)))
-    (progn
-      (setq oldVals (SC3D:CFG-VALS cfg))
-      (if oldVals
-        (progn
-          (setq attrVals (SC3D:READ-CAMERA-ATTRIBS e))
-          (setq newVals (SC3D:CAM-ATTR-OVERRIDE oldVals attrVals))
-          (if (SC3D:CAM-VALS-DIFFER-P oldVals newVals)
-            (progn
-              (setq base (cdr (assoc 10 ed)))
-              ;; Rotation reelle actuelle du bloc (pas celle memorisee dans le xdata),
-              ;; pour ne pas ecraser une rotation faite avec l'outil ROTATE de BricsCAD.
-              (setq oldRot (cdr (assoc 50 ed)))
-              (if (not oldRot) (setq oldRot 0.0))
-              (setq newVals (SC3D:SETVAL newVals 'rot (SC3D:RTD oldRot)))
-              ;; Conserver l'etat masque/affiche existant.
-              (setq newVals (SC3D:SETVAL newVals 'hidden (cdr (assoc 'hidden oldVals))))
-              ;; Recuperer l'ajustement (polygone de decoupe) existant avant de detruire
-              ;; le bloc, pour le reappliquer sur le nouveau bloc cree.
-              (setq clip (SC3D:GET-CLIP-XDATA e))
-              (SC3D:DELETE-TEXT-HANDLE oldVals)
-              (entdel e)
-              (setq newE (SC3D:CREATE-CAMERA-AUTO base newVals))
-              (if clip
-                (SC3D:APPLY-CLIP newE (car clip) (cdr clip))
-              )
-              T
-            )
-          )
-        )
-      )
-    )
-  )
-)
-
-(setq *SC3D_CAM_BUSY* nil)
-(setq *SC3D_CAM_REACTOR* nil)
-
-(defun SC3D:CAM-SYNC-ALL (/ ss n i e)
-  (if (not *SC3D_CAM_BUSY*)
-    (progn
-      (setq *SC3D_CAM_BUSY* T)
-      (setq ss (ssget "_X" (list '(0 . "INSERT") (list -3 (list *SC3D_APP*)))))
-      (if ss
-        (progn
-          (setq n (sslength ss))
-          (setq i 0)
-          (while (< i n)
-            (setq e (ssname ss i))
-            (if (and e (entget e) (SC3D:CAMERA-INSERT-P e))
-              (SC3D:CAM-SYNC-FROM-ATTRIBS e)
-            )
-            (setq i (1+ i))
-          )
-        )
-      )
-      (setq *SC3D_CAM_BUSY* nil)
-    )
-  )
-  (princ)
-)
-
-(defun SC3D:CAM-CMD-REACTOR (reactor params / cmd)
-  ;; Apres chaque commande (autre que S_CAMERA lui-meme, pour ne pas se re-declencher
-  ;; pendant Creer/Modifier), verifie si des attributs de camera ont ete modifies
-  ;; (typiquement depuis le panneau Proprietes) et regenere les cameras concernees.
-  (setq cmd (strcase (car params)))
-  (if (/= cmd "S_CAMERA")
-    (SC3D:CAM-SYNC-ALL)
-  )
-)
-
-(defun SC3D:CAM-START-REACTOR ()
-  (if (not *SC3D_CAM_REACTOR*)
-    (setq *SC3D_CAM_REACTOR*
-      (vlr-command-reactor
-        nil
-        '((:vlr-commandEnded . SC3D:CAM-CMD-REACTOR))
-      )
-    )
-  )
 )
 
 (defun SC3D:MAKE-ADD-CAM-DCL (/ fn f)
@@ -6978,11 +6675,6 @@
 (if (= (SC3D:CAM-SOURCE) "GITHUB")
   (SC3D:ENSURE-GITHUB-CAMERAS)
 )
-
-;; Active le reacteur qui detecte les modifications d'attributs (panneau Proprietes)
-;; sur les blocs camera et regenere leur geometrie en consequence (cf. section
-;; PROPRIETES RAPIDES plus haut dans ce fichier).
-(SC3D:CAM-START-REACTOR)
 
 ;; ------------------------------------------------------------------------------------ C_S_IA_IMAGE_VECTEUR ------------------------------------------------------------------------------------
 
