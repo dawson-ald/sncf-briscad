@@ -6338,7 +6338,7 @@
   (SC3D:PS-RECT layout (* 2.0 cw) 0.0 (* 3.0 cw) uh)
 )
 
-(defun SC3D:EXPORT-MAKE-LAYOUT (baseName legendBox existRec projRec camMrg / doc name layout uw uh cw vpW vpH midY titY infoY sitE lblE evVals pvVals)
+(defun SC3D:EXPORT-MAKE-LAYOUT (baseName legendBox existRec projRec camMrg / doc name layout uw uh cw vpW vpH midY titY infoY sitE lblE lw lh k lcx lcy lhw lhh evVals pvVals)
   ;; Cree une presentation en 3 volets, ENTIEREMENT dans la zone imprimable
   ;; (papier 630 x 297 paysage, marges 13 mm -> zone utile 604 x 271 ; l'origine
   ;; (0,0) de l'espace papier correspond au coin de cette zone) :
@@ -6395,18 +6395,32 @@
   )
 
   ;; Volet 1 : legende. La fenetre occupe TOUT le volet (meme taille que les
-  ;; fenetres 2 et 3, vpW x vpH), quel que soit le ratio de la zone choisie :
-  ;; le ZOOM Fenetre (SC3D:VP-ZOOM) conserve le ratio du contenu et peut donc
-  ;; montrer un peu plus de dessin sur un axe, mais la fenetre elle-meme
-  ;; remplit tout le 1er A4, sans bande de papier vide autour.
+  ;; fenetres 2 et 3, vpW x vpH) mais la vue garde EXACTEMENT la meme echelle
+  ;; que si elle etait cadree pile sur la zone choisie (k = plus grand facteur
+  ;; qui fait tenir la zone dans vpW x vpH en conservant son ratio) : on ne
+  ;; touche pas a cette echelle, on agrandit seulement la fenetre autour du
+  ;; centre de la zone -> le cadrage/l'echelle (la "vue") n'est pas modifie,
+  ;; seule la taille de la fenetre l'est.
   (if legendBox
-    (SC3D:ADD-VIEWPORT layout
-      (/ cw 2.0) midY
-      vpW vpH
-      (car legendBox) (cadr legendBox)
-      0.0
-      nil
-      nil
+    (progn
+      (setq lw (- (car (cadr legendBox)) (car (car legendBox))))
+      (setq lh (- (cadr (cadr legendBox)) (cadr (car legendBox))))
+      (if (< lw 0.001) (setq lw 0.001))
+      (if (< lh 0.001) (setq lh 0.001))
+      (setq k (SC3D:MIN (/ vpW lw) (/ vpH lh)))
+      (setq lcx (/ (+ (car (car legendBox)) (car (cadr legendBox))) 2.0))
+      (setq lcy (/ (+ (cadr (car legendBox)) (cadr (cadr legendBox))) 2.0))
+      (setq lhw (/ vpW (* 2.0 k)))
+      (setq lhh (/ vpH (* 2.0 k)))
+      (SC3D:ADD-VIEWPORT layout
+        (/ cw 2.0) midY
+        vpW vpH
+        (list (- lcx lhw) (- lcy lhh) 0.0)
+        (list (+ lcx lhw) (+ lcy lhh) 0.0)
+        0.0
+        nil
+        nil
+      )
     )
   )
 
