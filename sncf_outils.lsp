@@ -2437,6 +2437,24 @@
   (SC3D:DOWNLOAD-VIA-POWERSHELL *SC3D_GITHUB_CFG_URL* (SC3D:GITHUB-CFG-PATH))
 )
 
+(setq *SC3D_GITHUB_CAMERAS_FETCHED* nil)
+(setq *SC3D_GITHUB_CAMERAS_OK* nil)
+
+(defun SC3D:ENSURE-GITHUB-CAMERAS ()
+  ;; Ne telecharge la liste GitHub qu'une seule fois par session (au chargement
+  ;; du script, ou au premier passage en source GitHub si la source persistee
+  ;; etait Local) : les appels suivants reutilisent le fichier deja telecharge
+  ;; dans TEMPPREFIX, pour eviter d'interroger GitHub a chaque creation ou
+  ;; modification de camera.
+  (if (not *SC3D_GITHUB_CAMERAS_FETCHED*)
+    (progn
+      (setq *SC3D_GITHUB_CAMERAS_OK* (SC3D:DOWNLOAD-GITHUB-CAMERAS))
+      (setq *SC3D_GITHUB_CAMERAS_FETCHED* T)
+    )
+  )
+  *SC3D_GITHUB_CAMERAS_OK*
+)
+
 (defun SC3D:READ-LINES (path / f line out)
   (setq out '())
   (if (findfile path)
@@ -2833,7 +2851,7 @@
   ;; active. En cas d'echec de telechargement, on retombe sur le mode local.
   (setq src (if (= (get_tile "source") "1") "GITHUB" "LOCAL"))
   (set_tile "msg" "")
-  (if (and (= src "GITHUB") (not (SC3D:DOWNLOAD-GITHUB-CAMERAS)))
+  (if (and (= src "GITHUB") (not (SC3D:ENSURE-GITHUB-CAMERAS)))
     (progn
       (set_tile "msg"
         (strcat
@@ -2974,10 +2992,12 @@
       (end_list)
       (set_tile "source" (if (= (SC3D:CAM-SOURCE) "GITHUB") "1" "0"))
 
-      ;; Si la source persistee est GitHub, on tente le telechargement des
-      ;; l'ouverture de la boite de dialogue ; en cas d'echec on retombe sur
-      ;; le fichier local pour ne pas laisser des listes vides.
-      (if (and (= (SC3D:CAM-SOURCE) "GITHUB") (not (SC3D:DOWNLOAD-GITHUB-CAMERAS)))
+      ;; Si la source persistee est GitHub, la liste a deja ete telechargee au
+      ;; chargement du script (cf. SC3D:ENSURE-GITHUB-CAMERAS en fin de
+      ;; fichier) ; on ne re-interroge pas GitHub a chaque ouverture de la
+      ;; boite de dialogue. En cas d'echec (deja survenu au chargement) on
+      ;; retombe sur le fichier local pour ne pas laisser des listes vides.
+      (if (and (= (SC3D:CAM-SOURCE) "GITHUB") (not (SC3D:ENSURE-GITHUB-CAMERAS)))
         (progn
           (SC3D:SET-CAM-SOURCE "LOCAL")
           (set_tile "source" "0")
@@ -6645,6 +6665,15 @@
   )
 
   (princ)
+)
+
+;; Recupere la liste des cameras GitHub une seule fois, au chargement du
+;; script (si la source persistee est GitHub, cf. SC3D:INIT-CAM-SOURCE), afin
+;; que les ouvertures ulterieures de la boite de dialogue Creer/Modifier
+;; reutilisent le fichier deja telecharge au lieu d'interroger GitHub a chaque
+;; creation ou modification de camera (cf. SC3D:ENSURE-GITHUB-CAMERAS).
+(if (= (SC3D:CAM-SOURCE) "GITHUB")
+  (SC3D:ENSURE-GITHUB-CAMERAS)
 )
 
 ;; ------------------------------------------------------------------------------------ C_S_IA_IMAGE_VECTEUR ------------------------------------------------------------------------------------
