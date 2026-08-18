@@ -6394,16 +6394,15 @@
     (SC3D:PS-TEXT layout (* 2.5 cw) titY 5.0 (strcat "Situation projet\\U+00E9e - " baseName))
   )
 
-  ;; Volet 1 : legende. La fenetre occupe TOUT le volet, exactement le meme
-  ;; rectangle que le cadre A4 trace par SC3D:DRAW-A4-FRAMES (0,0)-(cw,uh) :
-  ;; pas de marge interieure ni de bande de titre, contrairement aux volets 2
-  ;; et 3. Le ZOOM Fenetre cadre la zone de legende choisie en conservant ses
-  ;; proportions, quitte a montrer un peu plus de dessin sur l'axe le plus
-  ;; large, pour que la fenetre remplisse le cadre bord a bord.
+  ;; Volet 1 : legende. La fenetre occupe TOUT le volet (meme taille que les
+  ;; fenetres 2 et 3, vpW x vpH), quel que soit le ratio de la zone choisie :
+  ;; le ZOOM Fenetre (SC3D:VP-ZOOM) conserve le ratio du contenu et peut donc
+  ;; montrer un peu plus de dessin sur un axe, mais la fenetre elle-meme
+  ;; remplit tout le 1er A4, sans bande de papier vide autour.
   (if legendBox
     (SC3D:ADD-VIEWPORT layout
-      (/ cw 2.0) (/ uh 2.0)
-      cw uh
+      (/ cw 2.0) midY
+      vpW vpH
       (car legendBox) (cadr legendBox)
       0.0
       nil
