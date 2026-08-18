@@ -6338,7 +6338,7 @@
   (SC3D:PS-RECT layout (* 2.0 cw) 0.0 (* 3.0 cw) uh)
 )
 
-(defun SC3D:EXPORT-MAKE-LAYOUT (baseName legendBox existRec projRec camMrg / doc name layout uw uh cw vpW vpH midY titY infoY sitE lblE lw lh k lvW lvH evVals pvVals)
+(defun SC3D:EXPORT-MAKE-LAYOUT (baseName legendBox existRec projRec camMrg / doc name layout uw uh cw vpW vpH midY titY infoY sitE lblE evVals pvVals)
   ;; Cree une presentation en 3 volets, ENTIEREMENT dans la zone imprimable
   ;; (papier 630 x 297 paysage, marges 13 mm -> zone utile 604 x 271 ; l'origine
   ;; (0,0) de l'espace papier correspond au coin de cette zone) :
@@ -6394,26 +6394,20 @@
     (SC3D:PS-TEXT layout (* 2.5 cw) titY 5.0 (strcat "Situation projet\\U+00E9e - " baseName))
   )
 
-  ;; Volet 1 : legende. La fenetre est dimensionnee aux memes proportions que la
-  ;; zone choisie (la plus grande possible dans le volet) : la legende remplit
-  ;; ainsi TOUTE la fenetre, bord a bord, sans bande vide.
+  ;; Volet 1 : legende. La fenetre occupe TOUT le volet, exactement le meme
+  ;; rectangle que le cadre A4 trace par SC3D:DRAW-A4-FRAMES (0,0)-(cw,uh) :
+  ;; pas de marge interieure ni de bande de titre, contrairement aux volets 2
+  ;; et 3. Le ZOOM Fenetre cadre la zone de legende choisie en conservant ses
+  ;; proportions, quitte a montrer un peu plus de dessin sur l'axe le plus
+  ;; large, pour que la fenetre remplisse le cadre bord a bord.
   (if legendBox
-    (progn
-      (setq lw (- (car (cadr legendBox)) (car (car legendBox))))
-      (setq lh (- (cadr (cadr legendBox)) (cadr (car legendBox))))
-      (if (< lw 0.001) (setq lw 0.001))
-      (if (< lh 0.001) (setq lh 0.001))
-      (setq k (SC3D:MIN (/ vpW lw) (/ vpH lh)))
-      (setq lvW (* k lw))
-      (setq lvH (* k lh))
-      (SC3D:ADD-VIEWPORT layout
-        (/ cw 2.0) midY
-        lvW lvH
-        (car legendBox) (cadr legendBox)
-        0.0
-        nil
-        nil
-      )
+    (SC3D:ADD-VIEWPORT layout
+      (/ cw 2.0) (/ uh 2.0)
+      cw uh
+      (car legendBox) (cadr legendBox)
+      0.0
+      nil
+      nil
     )
   )
 
