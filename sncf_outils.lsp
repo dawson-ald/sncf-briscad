@@ -2025,6 +2025,18 @@
 (setq *SC3D_CLIP_POLY* nil)
 (setq *SC3D_CLIP_TRIS* nil)
 
+;; Etat partage entre la boite de dialogue Creer/Modifier et son bouton
+;; "Appliquer" (cf. SC3D:DIALOG / SC3D:APPLY-DLG / SC3D:MODIFY-APPLY) :
+;; callback a invoquer sur "Appliquer", et pour la modification d'une camera
+;; existante, l'entite et le contexte (position/rotation/visibilite/ajustement)
+;; a conserver a chaque application sans fermer la fenetre.
+(setq *SC3D_DLG_APPLY_FN* nil)
+(setq *SC3D_MODIFY_ENTITY* nil)
+(setq *SC3D_MODIFY_BASE* nil)
+(setq *SC3D_MODIFY_ROT* nil)
+(setq *SC3D_MODIFY_HIDDEN* nil)
+(setq *SC3D_MODIFY_CLIP* nil)
+
 (defun SC3D:VIEW-LABEL->CODE (v)
   (if (= v "Vue de cote") "SIDE" "TOP")
 )
@@ -2801,7 +2813,15 @@
   (write-line "    }" f)
 
   (write-line "    : errtile { key = \"msg\"; }" f)
-  (write-line "    ok_cancel;" f)
+  (write-line "    : row {" f)
+  (write-line "      fixed_width = true;" f)
+  (write-line "      alignment = centered;" f)
+  (write-line "      : retirement_button { key = \"accept\"; label = \"OK\"; is_default = true; fixed_width = true; width = 10; }" f)
+  (write-line "      spacer;" f)
+  (write-line "      : retirement_button { key = \"apply\"; label = \"Appliquer\"; fixed_width = true; width = 12; }" f)
+  (write-line "      spacer;" f)
+  (write-line "      : retirement_button { key = \"cancel\"; label = \"Annuler\"; is_cancel = true; fixed_width = true; width = 10; }" f)
+  (write-line "    }" f)
   (write-line "  }" f)
   (write-line "}" f)
 
@@ -2941,11 +2961,16 @@
   )
 )
 
-(defun SC3D:ACCEPT-DLG (/ vals manu model cam f fmin fmax)
+(defun SC3D:VALIDATE-DLG (/ vals manu model cam f fmin fmax ok)
+  ;; Lit et valide les valeurs de la boite de dialogue (focale compatible avec
+  ;; le modele choisi, le cas echeant). Renvoie les valeurs si valides, nil
+  ;; sinon (message d'erreur deja affiche dans "msg"). Partage entre le bouton
+  ;; OK (SC3D:ACCEPT-DLG) et le bouton Appliquer (SC3D:APPLY-DLG).
   (setq vals (SC3D:READ-DLG))
   (setq manu (cdr (assoc 'manu vals)))
   (setq model (cdr (assoc 'model vals)))
   (setq f (cdr (assoc 'focal vals)))
+  (setq ok nil)
 
   (if (and (/= manu "Manuel") (/= model "Manuel"))
     (progn
@@ -2965,14 +2990,19 @@
                 " mm."
               )
             )
-            (progn
-              (setq SC3D_DLG_RET vals)
-              (done_dialog 1)
-            )
+            (setq ok T)
           )
         )
       )
     )
+    (setq ok T)
+  )
+
+  (if ok vals nil)
+)
+
+(defun SC3D:ACCEPT-DLG (/ vals)
+  (if (setq vals (SC3D:VALIDATE-DLG))
     (progn
       (setq SC3D_DLG_RET vals)
       (done_dialog 1)
@@ -2980,13 +3010,31 @@
   )
 )
 
-(defun SC3D:DIALOG (def / dcl id result fmt res std manu model)
+(defun SC3D:APPLY-DLG (/ vals)
+  ;; Bouton "Appliquer" : applique les valeurs courantes via le callback fourni
+  ;; a SC3D:DIALOG (cf. *SC3D_DLG_APPLY_FN*) sans fermer la fenetre.
+  (if (and *SC3D_DLG_APPLY_FN* (setq vals (SC3D:VALIDATE-DLG)))
+    (progn
+      (apply *SC3D_DLG_APPLY_FN* (list vals))
+      (set_tile "msg" "Modifications appliquees.")
+    )
+  )
+)
+
+(defun SC3D:DIALOG (def applyFn / dcl id result fmt res std manu model)
+  ;; applyFn : fonction optionnelle (quote 'SC3D:xxx) appelee avec les valeurs
+  ;; courantes quand l'utilisateur clique sur "Appliquer" (applique sans
+  ;; fermer la fenetre) ; nil = bouton "Appliquer" desactive (cas Creer, ou il
+  ;; n'y a pas encore d'entite a mettre a jour).
   (setq dcl (SC3D:MAKE-DCL))
   (setq id (load_dialog dcl))
 
   (if (not (new_dialog "sc3d_dialog" id))
     nil
     (progn
+      (setq *SC3D_DLG_APPLY_FN* applyFn)
+      (mode_tile "apply" (if applyFn 0 1))
+
       (start_list "source")
       (mapcar 'add_list *SC3D_CAM_SOURCE_LIST*)
       (end_list)
@@ -3112,6 +3160,7 @@
       (action_tile "use_hatch" "(SC3D:DLG-HATCH-UPDATE)")
       (action_tile "btn_regen" "(SC3D:DLG-REGEN-HATCH)")
       (action_tile "accept" "(SC3D:ACCEPT-DLG)")
+      (action_tile "apply" "(SC3D:APPLY-DLG)")
       (action_tile "cancel" "(done_dialog 0)")
 
       (if (= (start_dialog) 1)
@@ -3120,6 +3169,7 @@
       )
 
       (unload_dialog id)
+      (setq *SC3D_DLG_APPLY_FN* nil)
       result
     )
   )
@@ -4679,6 +4729,14 @@
   )
 )
 
+(defun SC3D:REGEN-VIEW ()
+  ;; Regen via l'API ActiveX (SC3D:ACAD-DOC) plutot que la commande REGEN :
+  ;; (command ...) ne peut pas etre invoque tant qu'une boite de dialogue DCL
+  ;; est active (cas du bouton "Appliquer" de la boite Creer/Modifier),
+  ;; contrairement a un appel COM direct.
+  (vl-catch-all-apply 'vla-regen (list (SC3D:ACAD-DOC) 0))
+)
+
 (defun SC3D:CREATE-CAMERA (base vals / calc blockName ins cfg rot camLayer)
   (setq vals (SC3D:SETVAL vals 'view "TOP"))
   (SC3D:SETUP-LAYERS (cdr (assoc 'std vals)))
@@ -4724,7 +4782,7 @@
 
   (SC3D:SET-XDATA ins cfg)
 
-  (command "_.REGEN")
+  (SC3D:REGEN-VIEW)
 
   (princ (strcat "\nAngle horizontal : " (rtos (cdr (assoc 'hAng calc)) 2 2) " deg"))
   (princ (strcat "\nLargeur CDV : " (rtos (cdr (assoc 'targetWidthMax calc)) 2 2) " m"))
@@ -4777,7 +4835,7 @@
 
   (SC3D:SET-XDATA ins cfg)
 
-  (command "_.REGEN")
+  (SC3D:REGEN-VIEW)
 
   (princ (strcat "\nVue de cote creee."))
   (princ (strcat "\nAngle vertical : " (rtos (cdr (assoc 'vAng calc)) 2 2) " deg"))
@@ -4915,7 +4973,7 @@
 )
 
 (defun SC3D:CMD-CREER (/ vals base rot)
-  (setq vals (SC3D:DIALOG nil))
+  (setq vals (SC3D:DIALOG nil nil))
 
   (if vals
     (progn
@@ -4935,7 +4993,34 @@
   (princ)
 )
 
-(defun SC3D:CMD-MODIFIER (/ sel e cfg oldVals newVals ed base oldRot newRot a clip newE)
+(defun SC3D:MODIFY-APPLY (vals / oldVals)
+  ;; Callback declenche par le bouton "Appliquer" de la boite de dialogue (via
+  ;; SC3D:APPLY-DLG) et par le bouton OK (via SC3D:CMD-MODIFIER) : recree le
+  ;; bloc camera *SC3D_MODIFY_ENTITY* avec les nouvelles valeurs, sans fermer
+  ;; la fenetre, en conservant position, rotation, visibilite et ajustement
+  ;; (decoupe) de l'entite en cours de modification (cf. les globales
+  ;; *SC3D_MODIFY_*, initialisees par SC3D:CMD-MODIFIER avant l'ouverture de
+  ;; la boite de dialogue).
+  (setq vals (SC3D:SETVAL vals 'rot *SC3D_MODIFY_ROT*))
+  ;; Conserver l'etat masque/affiche existant : sinon "Appliquer" ferait
+  ;; reapparaitre une camera masquee via l'outil Visibilite.
+  (setq vals (SC3D:SETVAL vals 'hidden *SC3D_MODIFY_HIDDEN*))
+
+  (setq oldVals (SC3D:CFG-VALS (SC3D:GET-XDATA *SC3D_MODIFY_ENTITY*)))
+  (if oldVals (SC3D:DELETE-TEXT-HANDLE oldVals))
+
+  (entdel *SC3D_MODIFY_ENTITY*)
+  (setq *SC3D_MODIFY_ENTITY* (SC3D:CREATE-CAMERA-AUTO *SC3D_MODIFY_BASE* vals))
+
+  ;; Reappliquer l'ajustement (polygone de decoupe) existant : sinon chaque
+  ;; "Appliquer" ferait disparaitre l'ajustement en place.
+  (if *SC3D_MODIFY_CLIP*
+    (SC3D:APPLY-CLIP *SC3D_MODIFY_ENTITY* (car *SC3D_MODIFY_CLIP*) (cdr *SC3D_MODIFY_CLIP*))
+  )
+  *SC3D_MODIFY_ENTITY*
+)
+
+(defun SC3D:CMD-MODIFIER (/ sel e cfg oldVals newVals ed base oldRot newRot a clip)
   (setq sel (entsel "\nSelectionner le bloc camera a modifier : "))
 
   (if sel
@@ -4949,14 +5034,10 @@
 
           (if oldVals
             (progn
-              (setq newVals (SC3D:DIALOG oldVals))
-
-              (if newVals
-                (progn
-                  (setq base (cdr (assoc 10 ed)))
-                  ;; Rotation reelle actuelle du bloc (et non celle memorisee dans le xdata),
-                  ;; pour ne pas ecraser une rotation faite entre-temps avec l'outil ROTATE de BricsCAD.
-                  (setq oldRot (SC3D:RTD (cdr (assoc 50 ed))))
+              (setq base (cdr (assoc 10 ed)))
+              ;; Rotation reelle actuelle du bloc (et non celle memorisee dans le xdata),
+              ;; pour ne pas ecraser une rotation faite entre-temps avec l'outil ROTATE de BricsCAD.
+              (setq oldRot (SC3D:RTD (cdr (assoc 50 ed))))
 
 ;; La rotation
 ;;                  (setq a
@@ -4970,27 +5051,37 @@
 ;;                    )
 ;;                  )
 
-                  (if a
-                    (setq newRot (SC3D:RTD a))
-                    (setq newRot oldRot)
-                  )
-
-                  (setq newVals (SC3D:SETVAL newVals 'rot newRot))
-                  ;; Conserver l'etat masque/affiche existant : sinon "Modifier" ferait
-                  ;; reapparaitre une camera masquee via l'outil Visibilite.
-                  (setq newVals (SC3D:SETVAL newVals 'hidden (cdr (assoc 'hidden oldVals))))
-                  ;; Recuperer l'ajustement (polygone de decoupe) existant avant de
-                  ;; detruire le bloc, pour le reappliquer sur le nouveau bloc cree :
-                  ;; sinon "Modifier" fait disparaitre l'ajustement en place.
-                  (setq clip (SC3D:GET-CLIP-XDATA e))
-                  (SC3D:DELETE-TEXT-HANDLE oldVals)
-                  (entdel e)
-                  (setq newE (SC3D:CREATE-CAMERA-AUTO base newVals))
-                  (if clip
-                    (SC3D:APPLY-CLIP newE (car clip) (cdr clip))
-                  )
-                )
+              (if a
+                (setq newRot (SC3D:RTD a))
+                (setq newRot oldRot)
               )
+
+              ;; Recuperer l'ajustement (polygone de decoupe) existant avant de
+              ;; detruire le bloc, pour le reappliquer sur le nouveau bloc cree :
+              ;; sinon "Modifier" fait disparaitre l'ajustement en place.
+              (setq clip (SC3D:GET-CLIP-XDATA e))
+
+              ;; Contexte partage avec SC3D:MODIFY-APPLY : le bouton "Appliquer"
+              ;; de la boite de dialogue recree l'entite courante a chaque clic
+              ;; sans fermer la fenetre, donc position/rotation/visibilite/
+              ;; ajustement doivent etre disponibles avant l'ouverture du dialogue.
+              (setq *SC3D_MODIFY_ENTITY* e)
+              (setq *SC3D_MODIFY_BASE* base)
+              (setq *SC3D_MODIFY_ROT* newRot)
+              (setq *SC3D_MODIFY_HIDDEN* (cdr (assoc 'hidden oldVals)))
+              (setq *SC3D_MODIFY_CLIP* clip)
+
+              (setq newVals (SC3D:DIALOG oldVals 'SC3D:MODIFY-APPLY))
+
+              ;; OK : appliquer une derniere fois les valeurs retournees (au cas
+              ;; ou des champs auraient change depuis le dernier "Appliquer").
+              ;; Annuler : les modifications deja appliquees restent en place,
+              ;; seuls les changements non encore appliques sont abandonnes.
+              (if newVals
+                (SC3D:MODIFY-APPLY newVals)
+              )
+
+              (setq *SC3D_MODIFY_ENTITY* nil)
             )
             (princ "\nImpossible de lire les informations de cette camera.")
           )
@@ -5625,7 +5716,7 @@
         (SC3D:CLEAR-CLIP-XDATA e)
       )
 
-      (command "_.REGEN")
+      (SC3D:REGEN-VIEW)
       T
     )
   )
