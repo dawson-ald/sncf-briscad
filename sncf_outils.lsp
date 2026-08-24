@@ -6047,6 +6047,7 @@
 (setq *SC3D_LEGEND_PANEL_W* 197.0)
 (setq *SC3D_SIT_PANEL_W* 203.5)
 (setq *SC3D_EXPORT_ZOOM* 10.0)
+(setq *SC3D_EXPORT_LEGEND_NAME* nil)
 (setq *SC3D_CV_COUNTER* 0)
 
 (defun SC3D:ACAD-DOC ()
@@ -6342,11 +6343,13 @@
   (SC3D:PS-RECT layout (+ w1 w2) 0.0 (+ w1 w2 w3) uh)
 )
 
-(defun SC3D:EXPORT-MAKE-LAYOUT (baseName legendBox existRec projRec camMrg / doc name layout uw uh w1 w2 w3 c1 c2 c3 vpW vpH midY titY infoY sitE lblE evVals pvVals)
+(defun SC3D:EXPORT-MAKE-LAYOUT (baseName legendBox existRec projRec camMrg legendName / doc name layout uw uh w1 w2 w3 c1 c2 c3 vpW vpH midY titY infoY sitE lblE evVals pvVals lvpH lvpMidY)
   ;; Cree une presentation en 3 volets, ENTIEREMENT dans la zone imprimable
   ;; (papier 630 x 297 paysage, marges 13 mm -> zone utile 604 x 271 ; l'origine
   ;; (0,0) de l'espace papier correspond au coin de cette zone) :
   ;;   volet 1 : legende (toutes les cameras gelees) - largeur *SC3D_LEGEND_PANEL_W*
+  ;;             si legendName est vrai, le nom du champ de vision (baseName)
+  ;;             est ajoute au-dessus de la fenetre de legende.
   ;;   volet 2 : situation existante (ou camera seule) - largeur *SC3D_SIT_PANEL_W*
   ;;   volet 3 : situation projetee, cadree sur son propre champ de vision - largeur *SC3D_SIT_PANEL_W*
   ;; Les cadres, les titres et les fenetres restent tous dans la zone imprimable.
@@ -6405,15 +6408,30 @@
     (SC3D:PS-TEXT layout c3 titY 5.0 (strcat "Situation projet\\U+00E9e - " baseName))
   )
 
-  ;; Volet 1 : legende
+  ;; Volet 1 : legende, avec le nom du champ de vision au-dessus si demande.
   (if legendBox
-    (SC3D:ADD-VIEWPORT layout
-      c1 (/ uh 2.0)
-      w1 uh
-      (car legendBox) (cadr legendBox)
-      0.0
-      nil
-      nil
+    (if legendName
+      (progn
+        (SC3D:PS-TEXT layout c1 titY 5.0 baseName)
+        (setq lvpH (- uh 8.0))
+        (setq lvpMidY (/ lvpH 2.0))
+        (SC3D:ADD-VIEWPORT layout
+          c1 lvpMidY
+          w1 lvpH
+          (car legendBox) (cadr legendBox)
+          0.0
+          nil
+          nil
+        )
+      )
+      (SC3D:ADD-VIEWPORT layout
+        c1 (/ uh 2.0)
+        w1 uh
+        (car legendBox) (cadr legendBox)
+        0.0
+        nil
+        nil
+      )
     )
   )
 
@@ -6466,15 +6484,15 @@
   found
 )
 
-(defun SC3D:EXPORT-SINGLE (rec legendBox camMrg / base)
+(defun SC3D:EXPORT-SINGLE (rec legendBox camMrg legendName / base)
   (setq base (cdr (assoc 'name rec)))
   (if (or (null base) (= base ""))
     (setq base (SC3D:NEXT-CV-NAME))
   )
-  (SC3D:EXPORT-MAKE-LAYOUT base legendBox rec nil camMrg)
+  (SC3D:EXPORT-MAKE-LAYOUT base legendBox rec nil camMrg legendName)
 )
 
-(defun SC3D:CMD-EXPORT (/ selEnts allEnts recs r e p1 p2 w1 w2 legendBox pct camMrg groups key grp lst existR projR curtab cfg vals delChoix delCount)
+(defun SC3D:CMD-EXPORT (/ selEnts allEnts recs r e p1 p2 w1 w2 legendBox pct camMrg groups key grp lst existR projR curtab cfg vals delChoix delCount legendName legendChoix)
   (setq curtab (getvar "CTAB"))
   (if (/= curtab "Model")
     (princ "\nExport a lancer depuis l'espace objet (Model).")
@@ -6504,6 +6522,33 @@
                   )
                 )
               )
+            )
+          )
+
+          ;; Nom du champ de vision au-dessus de la legende (optionnel), demande
+          ;; seulement si une zone de legende a ete choisie. Memorise pour l'export
+          ;; suivant.
+          (setq legendName nil)
+          (if legendBox
+            (progn
+              (initget "Oui Non")
+              (setq legendChoix
+                (getkword
+                  (strcat
+                    "\nAfficher le nom du champ de vision au-dessus de la legende ? [Oui/Non] <"
+                    (if *SC3D_EXPORT_LEGEND_NAME* "Oui" "Non")
+                    "> : "
+                  )
+                )
+              )
+              (setq legendName
+                (cond
+                  ((= legendChoix "Oui") T)
+                  ((= legendChoix "Non") nil)
+                  (T *SC3D_EXPORT_LEGEND_NAME*)
+                )
+              )
+              (setq *SC3D_EXPORT_LEGEND_NAME* legendName)
             )
           )
 
@@ -6579,7 +6624,7 @@
             (setq lst (cdr grp))
             (if (= key "")
               ;; Cameras sans nom : une presentation CV_n chacune.
-              (foreach r lst (SC3D:EXPORT-SINGLE r legendBox camMrg))
+              (foreach r lst (SC3D:EXPORT-SINGLE r legendBox camMrg legendName))
               (progn
                 (setq existR (SC3D:FIND-SIT-REC lst "EXIST"))
                 (setq projR (SC3D:FIND-SIT-REC lst "PROJ"))
@@ -6593,16 +6638,17 @@
                       existR
                       projR
                       camMrg
+                      legendName
                     )
                     ;; Les eventuelles autres cameras du meme nom : une presentation chacune.
                     (foreach r lst
                       (if (and (not (equal r existR)) (not (equal r projR)))
-                        (SC3D:EXPORT-SINGLE r legendBox camMrg)
+                        (SC3D:EXPORT-SINGLE r legendBox camMrg legendName)
                       )
                     )
                   )
                   ;; Pas de paire existante/projetee : une presentation par camera.
-                  (foreach r lst (SC3D:EXPORT-SINGLE r legendBox camMrg))
+                  (foreach r lst (SC3D:EXPORT-SINGLE r legendBox camMrg legendName))
                 )
               )
             )
