@@ -5971,7 +5971,7 @@
   (SC3D:LINE-RAW (list (car p1) (cadr p1) 0.0) (list (car p2) (cadr p2) 0.0) lay col)
 )
 
-(defun SC3D:CREATE-LABEL-CV (camPt pt cvname / textH margin radius cx cy textEnt box w h hw hh dx dy leaderStart blockName ins)
+(defun SC3D:CREATE-LABEL-CV (camPt pt cvname / textH charW textW margin radius cx cy hw hh dx dy leaderStart blockName ins)
   ;; Cree un bloc regroupant rectangle + texte (nom du champ de vision) + fleche
   ;; directe vers camPt, et l'insere en un seul point (0,0,0) : toute la geometrie
   ;; est deja en coordonnees WCS absolues, ce qui permet de ne suivre qu'une seule
@@ -5980,37 +5980,30 @@
   ;; jamais etre confondu avec un bloc camera par SC3D:CAMERA-INSERT-P et les
   ;; selections qui s'y appuient (Export, Visibilite, etc.).
   (setq textH 1.5)
-  ;; Marge volontairement faible : le cadre doit coller a la taille du nom,
-  ;; pas la doubler (cf. margin = 0.5*textH precedent, beaucoup trop genereux).
-  (setq margin 0.15)
-  (setq radius 0.1)
+  ;; Estimation large (police STANDARD, majuscules comprises) : une estimation
+  ;; trop juste ferait deborder le texte du cadre sur les noms longs, l'erreur
+  ;; par caractere s'accumulant avec la longueur du nom.
+  (setq charW (* 0.75 textH))
+  ;; Largeur du rectangle proportionnelle au nombre de caracteres du nom, pour
+  ;; que le cadre suive toujours la longueur du texte affiche.
+  (setq textW (SC3D:MAX (* charW (strlen cvname)) (* 2.0 textH)))
+  (setq margin (* 0.5 textH))
+  (setq radius (* 0.3 textH))
 
   (setq cx (car pt))
   (setq cy (cadr pt))
-
-  (setq blockName (strcat "SC3D_LABEL_" (SC3D:REPL (rtos (getvar "CDATE") 2 8) "." "_")))
-
-  (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
-
-  (setq textEnt (SC3D:TEXT-WORLD pt textH cvname "SC3D_TEXTES" 7 0.0))
-
-  ;; Largeur/hauteur reelles du texte rendu (police STANDARD), mesurees via
-  ;; textbox : plus fiable qu'une estimation par nombre de caracteres, qui
-  ;; sous-estimait la largeur reelle et faisait deborder le texte du cadre.
-  (setq box (textbox (entget textEnt)))
-  (setq w (abs (- (caadr box) (caar box))))
-  (setq h (abs (- (cadadr box) (cadr (car box)))))
-  (if (< w (* 2.0 textH)) (setq w (* 2.0 textH)))
-  (if (< h textH) (setq h textH))
-
-  (setq hw (+ (/ w 2.0) margin))
-  (setq hh (+ (/ h 2.0) margin))
+  (setq hw (+ (/ textW 2.0) margin))
+  (setq hh (+ (/ textH 2.0) margin))
 
   (setq dx (- (car camPt) cx))
   (setq dy (- (cadr camPt) cy))
   (setq leaderStart (SC3D:RECT-EXIT-POINT cx cy hw hh dx dy))
 
+  (setq blockName (strcat "SC3D_LABEL_" (SC3D:REPL (rtos (getvar "CDATE") 2 8) "." "_")))
+
+  (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
   (SC3D:MODEL-RECT (list (- cx hw) (- cy hh) 0.0) (list (+ cx hw) (+ cy hh) 0.0) radius "SC3D_TEXTES" 7)
+  (SC3D:TEXT-WORLD pt textH cvname "SC3D_TEXTES" 7 0.0)
   (SC3D:LEADER-ARROW leaderStart camPt "SC3D_TEXTES" 7)
   (entmake '((0 . "ENDBLK")))
 
