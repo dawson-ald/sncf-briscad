@@ -5935,14 +5935,35 @@
   (list (+ cx (* tt dx)) (+ cy (* tt dy)) 0.0)
 )
 
-(defun SC3D:MODEL-RECT (p1 p2 lay col / x1 y1 x2 y2)
-  ;; Rectangle en espace objet, trace avec 4 lignes brutes (non decoupees).
+(defun SC3D:MODEL-RECT (p1 p2 radius lay col / x1 y1 x2 y2 r b)
+  ;; Rectangle en espace objet, coins legerement arrondis (rayon radius),
+  ;; trace en une seule LWPOLYLINE fermee (bulge sur les 4 coins).
   (setq x1 (car p1)) (setq y1 (cadr p1))
   (setq x2 (car p2)) (setq y2 (cadr p2))
-  (SC3D:LINE-RAW (list x1 y1 0.0) (list x2 y1 0.0) lay col)
-  (SC3D:LINE-RAW (list x2 y1 0.0) (list x2 y2 0.0) lay col)
-  (SC3D:LINE-RAW (list x2 y2 0.0) (list x1 y2 0.0) lay col)
-  (SC3D:LINE-RAW (list x1 y2 0.0) (list x1 y1 0.0) lay col)
+  (setq r (SC3D:MIN radius (SC3D:MIN (/ (- x2 x1) 2.0) (/ (- y2 y1) 2.0))))
+  (if (< r 0.0) (setq r 0.0))
+  ;; bulge d'un arc de 90 deg = tan(angle/4).
+  (setq b (SC3D:TAN (SC3D:DTR 22.5)))
+  (entmake
+    (list
+      '(0 . "LWPOLYLINE")
+      '(100 . "AcDbEntity")
+      (cons 8 lay)
+      (cons 62 col)
+      '(100 . "AcDbPolyline")
+      '(90 . 8)
+      '(70 . 1)
+      (cons 38 0.0)
+      (cons 10 (list (+ x1 r) y1)) '(42 . 0.0)
+      (cons 10 (list (- x2 r) y1)) (cons 42 b)
+      (cons 10 (list x2 (+ y1 r))) '(42 . 0.0)
+      (cons 10 (list x2 (- y2 r))) (cons 42 b)
+      (cons 10 (list (- x2 r) y2)) '(42 . 0.0)
+      (cons 10 (list (+ x1 r) y2)) (cons 42 b)
+      (cons 10 (list x1 (- y2 r))) '(42 . 0.0)
+      (cons 10 (list x1 (+ y1 r))) (cons 42 b)
+    )
+  )
 )
 
 (defun SC3D:LEADER-ARROW (p1 p2 lay col)
@@ -5950,7 +5971,7 @@
   (SC3D:LINE-RAW (list (car p1) (cadr p1) 0.0) (list (car p2) (cadr p2) 0.0) lay col)
 )
 
-(defun SC3D:CREATE-LABEL-CV (camPt pt cvname / textH charW textW margin cx cy hw hh dx dy leaderStart blockName ins)
+(defun SC3D:CREATE-LABEL-CV (camPt pt cvname / textH charW textW margin radius cx cy hw hh dx dy leaderStart blockName ins)
   ;; Cree un bloc regroupant rectangle + texte (nom du champ de vision) + fleche
   ;; directe vers camPt, et l'insere en un seul point (0,0,0) : toute la geometrie
   ;; est deja en coordonnees WCS absolues, ce qui permet de ne suivre qu'une seule
@@ -5958,10 +5979,13 @@
   ;; NB : ce bloc ne recoit PAS le xdata de l'application (SC3D_CAMERA), pour ne
   ;; jamais etre confondu avec un bloc camera par SC3D:CAMERA-INSERT-P et les
   ;; selections qui s'y appuient (Export, Visibilite, etc.).
-  (setq textH 0.30)
+  (setq textH 1.5)
   (setq charW (* 0.6 textH))
+  ;; Largeur du rectangle proportionnelle au nombre de caracteres du nom, pour
+  ;; que le cadre suive toujours la longueur du texte affiche.
   (setq textW (SC3D:MAX (* charW (strlen cvname)) (* 2.0 textH)))
-  (setq margin 0.15)
+  (setq margin (* 0.5 textH))
+  (setq radius (* 0.3 textH))
 
   (setq cx (car pt))
   (setq cy (cadr pt))
@@ -5975,7 +5999,7 @@
   (setq blockName (strcat "SC3D_LABEL_" (SC3D:REPL (rtos (getvar "CDATE") 2 8) "." "_")))
 
   (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
-  (SC3D:MODEL-RECT (list (- cx hw) (- cy hh) 0.0) (list (+ cx hw) (+ cy hh) 0.0) "SC3D_TEXTES" 7)
+  (SC3D:MODEL-RECT (list (- cx hw) (- cy hh) 0.0) (list (+ cx hw) (+ cy hh) 0.0) radius "SC3D_TEXTES" 7)
   (SC3D:TEXT-WORLD pt textH cvname "SC3D_TEXTES" 7 0.0)
   (SC3D:LEADER-ARROW leaderStart camPt "SC3D_TEXTES" 7)
   (entmake '((0 . "ENDBLK")))
