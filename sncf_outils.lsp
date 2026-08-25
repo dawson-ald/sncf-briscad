@@ -5980,8 +5980,10 @@
   ;; jamais etre confondu avec un bloc camera par SC3D:CAMERA-INSERT-P et les
   ;; selections qui s'y appuient (Export, Visibilite, etc.).
   (setq textH 1.5)
-  (setq margin (* 0.5 textH))
-  (setq radius (* 0.3 textH))
+  ;; Marge volontairement faible : le cadre doit coller a la taille du nom,
+  ;; pas la doubler (cf. margin = 0.5*textH precedent, beaucoup trop genereux).
+  (setq margin 0.15)
+  (setq radius 0.1)
 
   (setq cx (car pt))
   (setq cy (cadr pt))
