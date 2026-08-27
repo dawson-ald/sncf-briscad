@@ -9611,7 +9611,7 @@ Image source utilisee : " path))
       (draw-text (list (+ x 11.8 2.4) (+ y ds 7) 0) (strcat numero_cam) layer 2 0)
       (draw-mtext (list (+ x 13 1.2 3) (- (+ y ds) 2) 0) (strcat (rtos ds 2 2) "m") layer 2 0 20)
 
-      (draw-cotlin-perso (list (+ x) (+ y ds 5) 0) (list (+ x 11.80) (+ y ds 5) 0) (strcat (rtos dq 2 2) "m") layer)
+      (draw-cotlin-perso (list (+ x) (+ y ds 5) 0) (list (+ x 11.80) (+ y ds 5) 0) (strcat dq "m") layer)
 
       (initget "O N")
       (setq chmp (getkword "\nVoulez-vous afficher le champ de vision de la camera ? [Oui/Non] <O> : "))
@@ -9622,8 +9622,8 @@ Image source utilisee : " path))
 
       (cond
         ((= chmp "O")
-          (hatch-poly4-color (list (+ x 88 5.20) (+ y ds) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5 50) 0) (list (+ x 88 5.20) (- (+ y ds) 13.5 50) 0) layer 231) 
-          (draw-poly4 (list (+ x 88 5.20) (+ y ds) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5 50) 0) (list (+ x 88 5.20) (- (+ y ds) 13.5 50) 0) layer) 
+          (hatch-poly4-color (list (+ x 88 5.20) (+ y ds) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5 50) 0) (list (+ x 88 5.20) (- (+ y ds) 13.5 50) 0) layer 231)
+          (draw-poly4 (list (+ x 88 5.20) (+ y ds) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5) 0) (list (+ x 88 5.20 2.6 2.6) (- (+ y ds) 13.5 50) 0) (list (+ x 88 5.20) (- (+ y ds) 13.5 50) 0) layer)
           (draw-mtext (list (+ x 88 5.20 2.6) (- (+ y ds) 31.75) 0) numero_cam layer 2 0 20)
         )
       )
@@ -9762,7 +9762,7 @@ Image source utilisee : " path))
       (draw-text (list (+ x 11.8 2.4) (- (+ y ds) 7) 0) (strcat numero_cam_1) layer 2 0)
       (draw-mtext (list (+ x 13 1.2 1.2 6 4.80) (+ y ds) 0) (strcat (rtos ds 2 2) "m") layer 2 0 20)
 
-      (draw-cotlin-perso (list (+ x) (- (+ y ds) 9) 0) (list (+ x 11.80) (- (+ y ds) 9) 0) (strcat (rtos dq 2 2) "m") layer)
+      (draw-cotlin-perso (list (+ x) (- (+ y ds) 9) 0) (list (+ x 11.80) (- (+ y ds) 9) 0) (strcat dq "m") layer)
 
       (initget "O N")
       (setq chmp (getkword "\nVoulez-vous afficher le champ de vision de la camera du haut ? [Oui/Non] <O> : "))
@@ -9794,7 +9794,7 @@ Image source utilisee : " path))
 
       (draw-text (list (+ x 11.8 2.4 4.80) (+ y ds 7) 0) (strcat numero_cam_2) layer 2 0)
 
-      (draw-cotlin-perso (list (+ x) (+ y ds 5) 0) (list (+ x 11.80 4.80) (+ y ds 5) 0) (strcat (rtos dq 2 2) "m") layer)
+      (draw-cotlin-perso (list (+ x) (+ y ds 5) 0) (list (+ x 11.80 4.80) (+ y ds 5) 0) (strcat dq "m") layer)
 
       (initget "O N")
       (setq chmp (getkword "\nVoulez-vous afficher le champ de vision de la camera ? [Oui/Non] <O> : "))
