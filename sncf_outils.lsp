@@ -2638,7 +2638,7 @@
   (if b "1" "0")
 )
 
-(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view useHatch hatchPat hatchCol hidden showDist cvname sit cvColor)
+(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view useHatch hatchPat hatchCol hidden showDist cvname sit)
   (setq manu     (cdr (assoc 'manu vals)))
   (setq model    (cdr (assoc 'model vals)))
   (setq fmt      (cdr (assoc 'fmt vals)))
@@ -2660,14 +2660,12 @@
   (setq showDist (if (assoc 'show_dist vals) (cdr (assoc 'show_dist vals)) T))
   (setq cvname   (cdr (assoc 'cvname vals)))
   (setq sit      (cdr (assoc 'situation vals)))
-  (setq cvColor  (cdr (assoc 'cvname_color vals)))
 
   (if (null view)     (setq view "TOP"))
   (if (null hatchPat) (setq hatchPat "ANSI31"))
   (if (null hatchCol) (setq hatchCol 1))
   (if (null cvname)   (setq cvname ""))
   (if (null sit)      (setq sit ""))
-  (if (null cvColor)  (setq cvColor 7))
 
   (strcat
     manu "|"
@@ -2691,8 +2689,7 @@
     (SC3D:BOOLSTR hidden) "|"
     (SC3D:BOOLSTR showDist) "|"
     (SC3D:CLEAN-NAME cvname) "|"
-    sit "|"
-    (itoa cvColor)
+    sit
   )
 )
 
@@ -2724,8 +2721,6 @@
       ;; Nom du champ de vision et situation (anciennes configs = vide).
       (cons 'cvname (if (> (length p) 20) (nth 20 p) ""))
       (cons 'situation (if (> (length p) 21) (nth 21 p) ""))
-      ;; Couleur ACI du texte du nom de champ de vision (anciennes configs = blanc/7).
-      (cons 'cvname_color (if (> (length p) 22) (atoi (nth 22 p)) 7))
     )
     nil
   )
@@ -2785,10 +2780,6 @@
   (write-line "      : popup_list { key = \"manu\"; label = \"Fabricant\"; width = 38; }" f)
   (write-line "      : popup_list { key = \"model\"; label = \"Modele\"; width = 38; }" f)
   (write-line "      : edit_box { key = \"camname\"; label = \"Nom du champ (optionnel)\"; edit_width = 24; }" f)
-  (write-line "      : row {" f)
-  (write-line "        : text { key = \"cvname_color_info\"; label = \"Couleur texte nom : ACI 7\"; width = 28; }" f)
-  (write-line "        : button { key = \"btn_cvname_color\"; label = \"Couleur...\"; width = 10; }" f)
-  (write-line "      }" f)
   (write-line "      : popup_list { key = \"situation\"; label = \"Situation\"; width = 22; }" f)
   (write-line "    }" f)
 
@@ -2849,18 +2840,6 @@
   (SC3D:RAND-HATCH)
   (set_tile "hatch_info"
     (strcat "Motif : " *SC3D_CUR_HATCH_PAT* "  Couleur ACI : " (itoa *SC3D_CUR_HATCH_COL*))
-  )
-)
-
-(defun SC3D:DLG-PICK-CVNAME-COLOR (/ res)
-  ;; Boite de dialogue standard AutoCAD/BricsCAD de choix de couleur ACI,
-  ;; initialisee sur la couleur courante ; res = nil si l'utilisateur annule.
-  (setq res (acad_colordlg (if *SC3D_CUR_CVNAME_COLOR* *SC3D_CUR_CVNAME_COLOR* 7) nil))
-  (if res
-    (progn
-      (setq *SC3D_CUR_CVNAME_COLOR* res)
-      (set_tile "cvname_color_info" (strcat "Couleur texte nom : ACI " (itoa res)))
-    )
   )
 )
 
@@ -2979,7 +2958,6 @@
     (cons 'hatch_color (if *SC3D_CUR_HATCH_COL* *SC3D_CUR_HATCH_COL* 1))
     (cons 'cvname (SC3D:CLEAN-NAME (get_tile "camname")))
     (cons 'situation (SC3D:SIT-LABEL->CODE (nth (atoi (get_tile "situation")) *SC3D_SIT_LIST*)))
-    (cons 'cvname_color (if *SC3D_CUR_CVNAME_COLOR* *SC3D_CUR_CVNAME_COLOR* 7))
   )
 )
 
@@ -3128,8 +3106,6 @@
           (set_tile "view" (itoa (SC3D:INDEXOF (SC3D:VIEW-CODE->LABEL (cdr (assoc 'view def))) *SC3D_VIEW_LIST*)))
 
           (set_tile "camname" (if (cdr (assoc 'cvname def)) (cdr (assoc 'cvname def)) ""))
-          (setq *SC3D_CUR_CVNAME_COLOR* (cdr (assoc 'cvname_color def)))
-          (if (null *SC3D_CUR_CVNAME_COLOR*) (setq *SC3D_CUR_CVNAME_COLOR* 7))
           (set_tile "situation"
             (itoa (SC3D:INDEXOF (SC3D:SIT-CODE->LABEL (cdr (assoc 'situation def))) *SC3D_SIT_LIST*))
           )
@@ -3158,7 +3134,6 @@
           (set_tile "std" "0")
           (set_tile "view" "0")
           (set_tile "camname" "")
-          (setq *SC3D_CUR_CVNAME_COLOR* 7)
           (set_tile "situation" "0")
           (set_tile "focal" "5")
           (set_tile "dist" "15")
@@ -3177,8 +3152,6 @@
       )
       (mode_tile "btn_regen" (if (= (get_tile "use_hatch") "1") 0 1))
 
-      (set_tile "cvname_color_info" (strcat "Couleur texte nom : ACI " (itoa *SC3D_CUR_CVNAME_COLOR*)))
-
       (SC3D:CAM-DLG-APPLY)
 
       (action_tile "source" "(SC3D:CAM-DLG-SOURCE-CHANGED)")
@@ -3186,7 +3159,6 @@
       (action_tile "model" "(SC3D:CAM-DLG-APPLY)")
       (action_tile "use_hatch" "(SC3D:DLG-HATCH-UPDATE)")
       (action_tile "btn_regen" "(SC3D:DLG-REGEN-HATCH)")
-      (action_tile "btn_cvname_color" "(SC3D:DLG-PICK-CVNAME-COLOR)")
       (action_tile "accept" "(SC3D:ACCEPT-DLG)")
       (action_tile "apply" "(SC3D:APPLY-DLG)")
       (action_tile "cancel" "(done_dialog 0)")
@@ -5999,7 +5971,7 @@
   (SC3D:LINE-RAW (list (car p1) (cadr p1) 0.0) (list (car p2) (cadr p2) 0.0) lay col)
 )
 
-(defun SC3D:CREATE-LABEL-CV (camPt pt cvname cvColor / textH charW textW margin radius cx cy hw hh dx dy leaderStart blockName ins)
+(defun SC3D:CREATE-LABEL-CV (camPt pt cvname / textH charW textW margin radius cx cy hw hh dx dy leaderStart blockName ins)
   ;; Cree un bloc regroupant rectangle + texte (nom du champ de vision) + fleche
   ;; directe vers camPt, et l'insere en un seul point (0,0,0) : toute la geometrie
   ;; est deja en coordonnees WCS absolues, ce qui permet de ne suivre qu'une seule
@@ -6007,9 +5979,6 @@
   ;; NB : ce bloc ne recoit PAS le xdata de l'application (SC3D_CAMERA), pour ne
   ;; jamais etre confondu avec un bloc camera par SC3D:CAMERA-INSERT-P et les
   ;; selections qui s'y appuient (Export, Visibilite, etc.).
-  ;; cvColor : couleur ACI du texte du nom (reglable dans la boite de dialogue
-  ;; Creer/Modifier) ; le cadre et la fleche restent en couleur 7 (calque).
-  (if (null cvColor) (setq cvColor 7))
   (setq textH 1.5)
   ;; Estimation large (police STANDARD, majuscules comprises) : une estimation
   ;; trop juste ferait deborder le texte du cadre sur les noms longs, l'erreur
@@ -6034,7 +6003,7 @@
 
   (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
   (SC3D:MODEL-RECT (list (- cx hw) (- cy hh) 0.0) (list (+ cx hw) (+ cy hh) 0.0) radius "SC3D_TEXTES" 7)
-  (SC3D:TEXT-WORLD pt textH cvname "SC3D_TEXTES" cvColor 0.0)
+  (SC3D:TEXT-WORLD pt textH cvname "SC3D_TEXTES" 7 0.0)
   (SC3D:LEADER-ARROW leaderStart camPt "SC3D_TEXTES" 7)
   (entmake '((0 . "ENDBLK")))
 
@@ -6107,7 +6076,7 @@
           ;; pour ne jamais en laisser deux en meme temps.
           (SC3D:DELETE-TEXT-HANDLE vals)
 
-          (setq ins (SC3D:CREATE-LABEL-CV camPt pt cvname (cdr (assoc 'cvname_color vals))))
+          (setq ins (SC3D:CREATE-LABEL-CV camPt pt cvname))
 
           (setq newCfg (SC3D:CFG-STR vals (cdr (assoc 5 (entget ins)))))
           (SC3D:SET-XDATA e newCfg)
@@ -6198,6 +6167,28 @@
 (setq *SC3D_EXPORT_ZOOM* 10.0)
 (setq *SC3D_EXPORT_LEGEND_NAME* nil)
 (setq *SC3D_CV_COUNTER* 0)
+
+;; Appid dediee a la case "Tracer la transparence" du gestionnaire de mise en
+;; page (xdata 1071 sur l'entite LAYOUT, cf. SC3D:SET-LAYOUT-PLOT-TRANSPARENCY) :
+;; sans elle, les zones semi-transparentes des champs de vision (SC3D:TRANS-DXF)
+;; ne sont pas reproduites a l'export PDF/impression.
+(setq *SC3D_PLOTTRANSP_APP* "PLOTTRANSPARENCY")
+
+(defun SC3D:REGAPP-PLOTTRANSP ()
+  (if (not (tblsearch "APPID" *SC3D_PLOTTRANSP_APP*))
+    (regapp *SC3D_PLOTTRANSP_APP*)
+  )
+)
+
+(defun SC3D:SET-LAYOUT-PLOT-TRANSPARENCY (en)
+  (SC3D:REGAPP-PLOTTRANSP)
+  (entmod
+    (append
+      (entget en)
+      (list (list -3 (list *SC3D_PLOTTRANSP_APP* (cons 1071 1))))
+    )
+  )
+)
 
 (defun SC3D:ACAD-DOC ()
   (vla-get-ActiveDocument (vlax-get-acad-object))
@@ -6464,6 +6455,7 @@
     )
   )
   (entmod ed)
+  (SC3D:SET-LAYOUT-PLOT-TRANSPARENCY en)
   T
 )
 
