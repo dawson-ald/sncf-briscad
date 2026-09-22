@@ -6225,13 +6225,137 @@
   (list (vlax-safearray->list mn) (vlax-safearray->list mx))
 )
 
+(defun SC3D:LOCAL->WORLD-PT (pt base rot / x y ca sa)
+  ;; Inverse de SC3D:WORLD->LOCAL-PT : coordonnees locales du bloc camera -> WCS.
+  (setq x (car pt))
+  (setq y (cadr pt))
+  (setq ca (cos rot))
+  (setq sa (sin rot))
+  (list
+    (+ (car base) (- (* x ca) (* y sa)))
+    (+ (cadr base) (+ (* x sa) (* y ca)))
+    0.0
+  )
+)
+
+(defun SC3D:PTS-EXTENT (pts base rot / p w xmin ymin xmax ymax)
+  ;; Emprise WCS (bmin bmax) d'une liste de points exprimes en coordonnees locales
+  ;; du bloc camera (base = point d'insertion, rot = rotation, en WCS).
+  (foreach p pts
+    (setq w (SC3D:LOCAL->WORLD-PT p base rot))
+    (if (null xmin)
+      (progn
+        (setq xmin (car w))  (setq xmax (car w))
+        (setq ymin (cadr w)) (setq ymax (cadr w))
+      )
+      (progn
+        (setq xmin (SC3D:MIN xmin (car w)))
+        (setq xmax (SC3D:MAX xmax (car w)))
+        (setq ymin (SC3D:MIN ymin (cadr w)))
+        (setq ymax (SC3D:MAX ymax (cadr w)))
+      )
+    )
+  )
+  (if xmin
+    (list (list xmin ymin 0.0) (list xmax ymax 0.0))
+    nil
+  )
+)
+
+(defun SC3D:FOV-POLY (vals calc / maxD camH objH tanH tilt view vHalf wMax topY yTop)
+  ;; Contour du champ de vision seul, en coordonnees locales du bloc (camera en
+  ;; 0,0, axe de visee = +X) : le cone limite par la distance max en vue du dessus,
+  ;; le profil camera/cible en vue de cote. Sert de sujet de decoupe a
+  ;; SC3D:CAM-EXTENT : ni la grille, ni les cotes, ni le contour d'ajustement n'en
+  ;; font partie.
+  (setq maxD (cdr (assoc 'dist vals)))
+  (setq camH (cdr (assoc 'camh vals)))
+  (setq objH (cdr (assoc 'objh vals)))
+  (setq tanH (cdr (assoc 'tanH calc)))
+  (setq tilt (cdr (assoc 'tilt calc)))
+  (setq view (cdr (assoc 'view vals)))
+  (if (or (null maxD) (<= maxD 0.0))
+    nil
+    (if (= view "SIDE")
+      (progn
+        ;; Vue de cote : x = distance, y = hauteur (du sol au plus haut des trois
+        ;; reperes : hauteur camera, hauteur objet, rayon haut a la distance max).
+        (setq vHalf (/ (SC3D:DTR (cdr (assoc 'vAng calc))) 2.0))
+        (setq topY (SC3D:SIDE-TOP-Y maxD camH tilt vHalf))
+        (setq yTop (SC3D:MAX camH (SC3D:MAX objH (SC3D:MAX topY 0.0))))
+        (list
+          (list 0.0 0.0)
+          (list maxD 0.0)
+          (list maxD yTop)
+          (list 0.0 yTop)
+        )
+      )
+      (progn
+        ;; Vue du dessus : cone au sol, de la camera jusqu'a la distance max
+        ;; (meme enveloppe que SC3D:CONE-HALF-WIDTH).
+        (setq wMax (SC3D:HALF-WIDTH-JVSG maxD tanH tilt camH objH))
+        (list
+          (list 0.0 0.0)
+          (list maxD (- wMax))
+          (list maxD wMax)
+        )
+      )
+    )
+  )
+)
+
+(defun SC3D:CAM-EXTENT (e vals / ed base rot calc clip poly oldTris frags frag all)
+  ;; Emprise sur laquelle cadrer les fenetres d'export pour cette camera.
+  ;; Sans ajustement : l'emprise du bloc (SC3D:ENT-BBOX).
+  ;; Avec un ajustement actif : l'emprise du champ de vision reellement visible,
+  ;; soit le cone limite par la distance max decoupe par le polygone d'ajustement.
+  ;; L'emprise du bloc ne convient pas dans ce cas : elle englobe aussi le contour
+  ;; d'ajustement, dessine en entier (cf. SC3D:DRAW-CLIP-CONTOUR) et generalement
+  ;; bien plus large que ce qui reste visible, si bien que le cadrage restait cale
+  ;; sur la distance max et la vue se retrouvait tres dezoomee des que l'ajustement
+  ;; rognait le champ.
+  (setq ed (entget e))
+  (setq base (cdr (assoc 10 ed)))
+  (setq rot (cdr (assoc 50 ed)))
+  (if (null rot) (setq rot 0.0))
+
+  (setq clip (SC3D:GET-CLIP-XDATA e))
+  (if (and base clip (car clip))
+    (progn
+      (setq calc (SC3D:CALC vals))
+      (setq poly (SC3D:FOV-POLY vals calc))
+      (if poly
+        (progn
+          ;; SC3D:CLIP-FLAT-POLY travaille sur la triangulation courante : on la
+          ;; substitue le temps du calcul, sans perturber un dessin en cours.
+          (setq oldTris *SC3D_CLIP_TRIS*)
+          (setq *SC3D_CLIP_TRIS* (SC3D:EAR-CLIP-TRIANGULATE (cdr clip)))
+          (setq frags (SC3D:CLIP-FLAT-POLY poly))
+          (setq *SC3D_CLIP_TRIS* oldTris)
+          (setq all '())
+          (foreach frag frags
+            (setq all (append all frag))
+          )
+        )
+      )
+    )
+  )
+
+  ;; Pas d'ajustement actif, ou ajustement sans intersection avec le champ de
+  ;; vision : on retombe sur l'emprise du bloc.
+  (if all
+    (SC3D:PTS-EXTENT all base rot)
+    (SC3D:ENT-BBOX e)
+  )
+)
+
 (defun SC3D:CAM-REC (e / cfg vals bb)
   ;; Fiche d'export d'une camera : entite, calque dedie, nom, situation, emprise.
   (setq cfg (SC3D:GET-XDATA e))
   (setq vals (if cfg (SC3D:CFG-VALS cfg) nil))
   (if vals
     (progn
-      (setq bb (SC3D:ENT-BBOX e))
+      (setq bb (SC3D:CAM-EXTENT e vals))
       (list
         (cons 'ent e)
         (cons 'lay (SC3D:CAM-LAYER-ASSIGN e vals))
