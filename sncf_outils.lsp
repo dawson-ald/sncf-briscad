@@ -3280,7 +3280,11 @@
   (SC3D:LAYER "SC3D_CAMERA" 2)
   (SC3D:LAYER "SC3D_RAYONS" 4)
   (SC3D:LAYER "SC3D_AXE" 7)
-  (SC3D:LAYER "SC3D_TEXTES" 7)
+  ;; Couleur imposee seulement a la creation : elle peut etre changee (Texte >
+  ;; Calque du nom) sans etre ecrasee a chaque nouvelle camera.
+  (if (not (tblsearch "LAYER" "SC3D_TEXTES"))
+    (SC3D:LAYER "SC3D_TEXTES" 7)
+  )
   (SC3D:LAYER "SC3D_AJUSTEMENT" 30)
   (SC3D:LAYER "SC3D_HACHURE" 3)
   (SC3D:LAYER "SC3D_NON_VISIBLE" 14)
@@ -4640,16 +4644,34 @@
   (entmake '((0 . "ENDBLK")))
 )
 
-(defun SC3D:DELETE-TEXT-HANDLE (vals / h e)
+(defun SC3D:LINKED-TEXT (vals cam / h e xd)
+  ;; Texte lie a la camera cam (handle texth de sa configuration), ou nil.
+  ;; entget renvoie nil si l'entite a deja ete supprimee (par exemple a la main
+  ;; dans le dessin) : elle n'est alors pas renvoyee, car un entdel dessus la
+  ;; restaurerait au lieu de la laisser supprimee.
+  ;; Un repere nom du champ de vision relie a une autre camera (camera copiee,
+  ;; dont la configuration pointe encore sur le repere de l'originale) n'est pas
+  ;; considere comme le sien.
   (setq h (cdr (assoc 'texth vals)))
-  (if (and h (/= h ""))
+  (if (and h (/= h "") (setq e (handent h)) (entget e))
     (progn
-      (setq e (handent h))
-      ;; entget renvoie nil si l'entite a deja ete supprimee (par exemple a la
-      ;; main dans le dessin) : appeler entdel dans ce cas la restaurerait au
-      ;; lieu de la laisser supprimee (entdel sur une entite deja effacee
-      ;; annule l'effacement au lieu de la supprimer).
-      (if (and e (entget e)) (entdel e))
+      (setq xd (SC3D:LBL-XDATA e))
+      (if (and xd (= (car xd) "LABEL") cam (/= (nth 1 xd) (cdr (assoc 5 (entget cam)))))
+        nil
+        e
+      )
+    )
+    nil
+  )
+)
+
+(defun SC3D:DELETE-TEXT-HANDLE (vals cam / e)
+  (setq e (SC3D:LINKED-TEXT vals cam))
+  (if e
+    (progn
+      ;; Repere nom du champ de vision : son trait est une entite a part.
+      (SC3D:LBL-DELETE-LEADERS e)
+      (entdel e)
     )
   )
 )
@@ -4993,7 +5015,7 @@
   (princ)
 )
 
-(defun SC3D:MODIFY-APPLY (vals / oldVals)
+(defun SC3D:MODIFY-APPLY (vals / oldVals lbl)
   ;; Callback declenche par le bouton "Appliquer" de la boite de dialogue (via
   ;; SC3D:APPLY-DLG) et par le bouton OK (via SC3D:CMD-MODIFIER) : recree le
   ;; bloc camera *SC3D_MODIFY_ENTITY* avec les nouvelles valeurs, sans fermer
@@ -5007,10 +5029,22 @@
   (setq vals (SC3D:SETVAL vals 'hidden *SC3D_MODIFY_HIDDEN*))
 
   (setq oldVals (SC3D:CFG-VALS (SC3D:GET-XDATA *SC3D_MODIFY_ENTITY*)))
-  (if oldVals (SC3D:DELETE-TEXT-HANDLE oldVals))
+  ;; Repere nom du champ de vision : conserve (position et calque choisis par
+  ;; l'utilisateur) et relie a la camera recreee ; tout autre texte lie est
+  ;; supprime, comme avant.
+  (setq lbl (if oldVals (SC3D:LINKED-TEXT oldVals *SC3D_MODIFY_ENTITY*) nil))
+  (if (not (SC3D:LBL-P lbl))
+    (progn
+      (setq lbl nil)
+      (if oldVals (SC3D:DELETE-TEXT-HANDLE oldVals *SC3D_MODIFY_ENTITY*))
+    )
+  )
 
   (entdel *SC3D_MODIFY_ENTITY*)
   (setq *SC3D_MODIFY_ENTITY* (SC3D:CREATE-CAMERA-AUTO *SC3D_MODIFY_BASE* vals))
+  (if lbl
+    (SC3D:LBL-LOCKED-CALL 'SC3D:LBL-FOLLOW-CAMERA (list lbl *SC3D_MODIFY_ENTITY*))
+  )
 
   ;; Reappliquer l'ajustement (polygone de decoupe) existant : sinon chaque
   ;; "Appliquer" ferait disparaitre l'ajustement en place.
@@ -5921,8 +5955,45 @@
 )
 
 ;; ------------------------------------------------------------------------------------
-;; REPERE "NOM DU CHAMP DE VISION" (rectangle + fleche directe vers la camera)
+;; REPERE "NOM DU CHAMP DE VISION" (rectangle + nom, relie a la camera par un trait)
+;;
+;; Le repere est un bloc (cadre + nom, centres sur son point d'insertion) et le
+;; trait une LINE separee, recalculee automatiquement par reacteurs des que le
+;; repere ou sa camera est deplace, tourne ou change de calque : les reperes se
+;; deplacent donc librement (DEPLACER, poignees...), le trait reste accroche au
+;; bord du cadre et a la camera.
+;;
+;; Liens, en xdata *SC3D_LBL_APP* (distincte de *SC3D_APP* pour qu'un repere ne
+;; soit jamais pris pour un bloc camera par SC3D:CAMERA-INSERT-P) :
+;;   - repere (INSERT) : "LABEL", handle de la camera, demi-largeur, demi-hauteur
+;;   - trait (LINE)    : "LEADER", handle du repere
+;;   - camera          : handle du repere dans le champ texth de sa configuration
+;;
+;; Cadre et nom sont sur le calque 0 en couleur DuBloc, et le trait recopie le
+;; calque et la couleur de l'INSERT : changer le calque du repere (Texte >
+;; Calque du nom) change donc le calque et la couleur des trois.
 ;; ------------------------------------------------------------------------------------
+
+(setq *SC3D_LBL_APP* "SC3D_LABEL")
+(setq *SC3D_LBL_TEXTH* 1.5)
+;; Commandes qui peuvent creer des reperes ou des traits sans modifier un objet
+;; deja surveille (copie...) : passe complete apres elles.
+(setq *SC3D_LBL_REFRESH_CMDS*
+  '("COPY" "PASTECLIP" "PASTEORIG" "MIRROR" "ARRAY" "ARRAYCLASSIC" "ARRAYRECT"
+    "ARRAYPOLAR" "ARRAYPATH" "GRIP_STRETCH" "GRIP_MOVE" "GRIP_ROTATE" "GRIP_SCALE"
+    "GRIP_MIRROR")
+)
+;; Annulation/retablissement : l'etat restaure est laisse tel quel. Si les
+;; corrections faites par le reacteur formaient leur propre etape d'annulation,
+;; les refaire apres chaque U empecherait de remonter plus loin dans l'historique.
+(setq *SC3D_LBL_UNDO_CMDS* '("U" "UNDO" "REDO" "MREDO" "OOPS"))
+;; Verrou : ignore les notifications dues a nos propres modifications.
+;; Sale : une passe complete est due a la prochaine fin de commande.
+;; (*SC3D_LBL_OBJ_REACTOR*, *SC3D_LBL_CMD_REACTOR* et *SC3D_LBL_WATCHED* ne sont
+;; volontairement pas reinitialises ici : recharger le script ne doit pas
+;; creer de reacteurs en double.)
+(setq *SC3D_LBL_BUSY* nil)
+(setq *SC3D_LBL_DIRTY* nil)
 
 (defun SC3D:RECT-EXIT-POINT (cx cy hw hh dx dy / tx ty tt)
   ;; Point ou le rayon issu du centre (cx cy) d'un rectangle axe (demi-largeur hw,
@@ -5966,68 +6037,537 @@
   )
 )
 
-(defun SC3D:LEADER-ARROW (p1 p2 lay col)
-  ;; Ligne directe de p1 a p2 (le champ de vision), sans pointe de fleche.
-  (SC3D:LINE-RAW (list (car p1) (cadr p1) 0.0) (list (car p2) (cadr p2) 0.0) lay col)
+(defun SC3D:DXF-PUT (ed code val)
+  ;; Remplace (ou ajoute) le groupe code dans la liste d'entite ed.
+  (if (assoc code ed)
+    (subst (cons code val) (assoc code ed) ed)
+    (append ed (list (cons code val)))
+  )
 )
 
-(defun SC3D:CREATE-LABEL-CV (camPt pt cvname / textH charW textW margin radius cx cy hw hh dx dy leaderStart blockName ins)
-  ;; Cree un bloc regroupant rectangle + texte (nom du champ de vision) + fleche
-  ;; directe vers camPt, et l'insere en un seul point (0,0,0) : toute la geometrie
-  ;; est deja en coordonnees WCS absolues, ce qui permet de ne suivre qu'une seule
-  ;; entite (l'INSERT) pour la suppression/regeneration ulterieure.
-  ;; NB : ce bloc ne recoit PAS le xdata de l'application (SC3D_CAMERA), pour ne
-  ;; jamais etre confondu avec un bloc camera par SC3D:CAMERA-INSERT-P et les
-  ;; selections qui s'y appuient (Export, Visibilite, etc.).
-  (setq textH 1.5)
+(defun SC3D:UNIQUE-BLOCK-NAME (prefix / base name n)
+  ;; CDATE n'est precis qu'au centieme de seconde : plusieurs reperes crees d'un
+  ;; coup auraient le meme nom, et redefiniraient donc tous le meme bloc.
+  (setq base (strcat prefix (SC3D:REPL (rtos (getvar "CDATE") 2 8) "." "_")))
+  (setq name base)
+  (setq n 1)
+  (while (tblsearch "BLOCK" name)
+    (setq name (strcat base "_" (itoa n)))
+    (setq n (+ n 1))
+  )
+  name
+)
+
+(defun SC3D:LBL-REGAPP ()
+  (if (not (tblsearch "APPID" *SC3D_LBL_APP*))
+    (regapp *SC3D_LBL_APP*)
+  )
+)
+
+(defun SC3D:LBL-XDATA (e / xd)
+  ;; Valeurs de la xdata *SC3D_LBL_APP* de e, sans les codes de groupe :
+  ;; ("LABEL" handleCamera demiLargeur demiHauteur) ou ("LEADER" handleRepere).
+  ;; nil si e n'existe plus ou n'en a pas.
+  (if (and e (entget e))
+    (progn
+      (setq xd (assoc *SC3D_LBL_APP* (cdr (assoc -3 (entget e (list *SC3D_LBL_APP*))))))
+      (if xd (mapcar 'cdr (cdr xd)) nil)
+    )
+    nil
+  )
+)
+
+(defun SC3D:LBL-P (e / xd)
+  ;; T si e est un repere "nom du champ de vision" (et pas un trait).
+  (setq xd (SC3D:LBL-XDATA e))
+  (and
+    xd
+    (= (car xd) "LABEL")
+    (= (length xd) 4)
+    (= (cdr (assoc 0 (entget e))) "INSERT")
+  )
+)
+
+(defun SC3D:LBL-XDATA-LIST (camHandle hw hh)
+  (list (cons 1000 "LABEL") (cons 1000 camHandle) (cons 1040 hw) (cons 1040 hh))
+)
+
+(defun SC3D:LBL-SET-XDATA (e lst)
+  (SC3D:LBL-REGAPP)
+  (entmod (append (entget e) (list (list -3 (cons *SC3D_LBL_APP* lst)))))
+  (entupd e)
+)
+
+(defun SC3D:LBL-SIZE (cvname / textH textW margin)
+  ;; (demi-largeur demi-hauteur) du cadre pour ce nom : largeur proportionnelle
+  ;; au nombre de caracteres, pour que le cadre suive la longueur du texte.
+  (setq textH *SC3D_LBL_TEXTH*)
   ;; Estimation large (police STANDARD, majuscules comprises) : une estimation
   ;; trop juste ferait deborder le texte du cadre sur les noms longs, l'erreur
   ;; par caractere s'accumulant avec la longueur du nom.
-  (setq charW (* 0.75 textH))
-  ;; Largeur du rectangle proportionnelle au nombre de caracteres du nom, pour
-  ;; que le cadre suive toujours la longueur du texte affiche.
-  (setq textW (SC3D:MAX (* charW (strlen cvname)) (* 2.0 textH)))
+  (setq textW (SC3D:MAX (* 0.75 textH (strlen cvname)) (* 2.0 textH)))
   (setq margin (* 0.5 textH))
-  (setq radius (* 0.3 textH))
+  (list (+ (/ textW 2.0) margin) (+ (/ textH 2.0) margin))
+)
 
-  (setq cx (car pt))
-  (setq cy (cadr pt))
-  (setq hw (+ (/ textW 2.0) margin))
-  (setq hh (+ (/ textH 2.0) margin))
-
-  (setq dx (- (car camPt) cx))
-  (setq dy (- (cadr camPt) cy))
-  (setq leaderStart (SC3D:RECT-EXIT-POINT cx cy hw hh dx dy))
-
-  (setq blockName (strcat "SC3D_LABEL_" (SC3D:REPL (rtos (getvar "CDATE") 2 8) "." "_")))
-
+(defun SC3D:LBL-DEFINE-BLOCK (blockName cvname / size hw)
+  ;; (Re)definit le bloc du repere : cadre arrondi + nom, centres sur l'origine
+  ;; du bloc, calque 0 / couleur DuBloc (cf. en-tete de section). Redefinir le
+  ;; bloc d'un repere existant le met a jour en place (l'INSERT garde position,
+  ;; rotation et calque). Retourne (demi-largeur demi-hauteur).
+  (setq size (SC3D:LBL-SIZE cvname))
+  (setq hw (car size))
   (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
-  (SC3D:MODEL-RECT (list (- cx hw) (- cy hh) 0.0) (list (+ cx hw) (+ cy hh) 0.0) radius "SC3D_TEXTES" 7)
-  (SC3D:TEXT-WORLD pt textH cvname "SC3D_TEXTES" 7 0.0)
-  (SC3D:LEADER-ARROW leaderStart camPt "SC3D_TEXTES" 7)
+  (SC3D:MODEL-RECT (list (- hw) (- (cadr size)) 0.0) (list hw (cadr size) 0.0) (* 0.3 *SC3D_LBL_TEXTH*) "0" 0)
+  ;; entmake (et non SC3D:TEXT-WORLD / entmakex) : le texte doit appartenir au
+  ;; bloc en cours de definition, ses coordonnees etant relatives au bloc.
+  (entmake
+    (list
+      '(0 . "MTEXT")
+      '(100 . "AcDbEntity")
+      '(8 . "0")
+      '(62 . 0)
+      '(100 . "AcDbMText")
+      '(10 0.0 0.0 0.0)
+      (cons 40 *SC3D_LBL_TEXTH*)
+      (cons 41 (* 2.0 hw))
+      (cons 1 cvname)
+      '(50 . 0.0)
+      '(7 . "STANDARD")
+      '(71 . 5)
+      '(72 . 5)
+    )
+  )
   (entmake '((0 . "ENDBLK")))
+  size
+)
 
+(defun SC3D:LBL-ALL (/ ss i e out)
+  ;; Tous les reperes du dessin.
+  (setq out '())
+  (setq ss (ssget "_X" (list '(0 . "INSERT") (list -3 (list *SC3D_LBL_APP*)))))
+  (if ss
+    (progn
+      (setq i 0)
+      (while (< i (sslength ss))
+        (setq e (ssname ss i))
+        (if (SC3D:LBL-P e)
+          (setq out (cons e out))
+        )
+        (setq i (+ i 1))
+      )
+    )
+  )
+  out
+)
+
+(defun SC3D:LBL-LEADERS (/ ss i e xd pair out)
+  ;; Tous les traits du dessin, regroupes par handle de repere :
+  ;; ((handleRepere trait1 trait2 ...) ...).
+  (setq out '())
+  (setq ss (ssget "_X" (list '(0 . "LINE") (list -3 (list *SC3D_LBL_APP*)))))
+  (if ss
+    (progn
+      (setq i 0)
+      (while (< i (sslength ss))
+        (setq e (ssname ss i))
+        (setq xd (SC3D:LBL-XDATA e))
+        (if (and xd (= (car xd) "LEADER"))
+          (if (setq pair (assoc (cadr xd) out))
+            (setq out (subst (append pair (list e)) pair out))
+            (setq out (cons (list (cadr xd) e) out))
+          )
+        )
+        (setq i (+ i 1))
+      )
+    )
+  )
+  out
+)
+
+(defun SC3D:LBL-LEADER-OF (lbl)
+  ;; Trait du repere lbl (le premier trouve), ou nil.
+  (cadr (assoc (cdr (assoc 5 (entget lbl))) (SC3D:LBL-LEADERS)))
+)
+
+(defun SC3D:LBL-DELETE-LEADERS (lbl)
+  ;; A appeler avant de supprimer le repere lbl : son trait est une entite a part.
+  (foreach l (cdr (assoc (cdr (assoc 5 (entget lbl))) (SC3D:LBL-LEADERS)))
+    (entdel l)
+  )
+)
+
+(defun SC3D:LBL-UPDATE-LEADER (lbl line / ed xd cam camPt ins rot sx sy ca sa dx dy lx ly ex wx wy p1 lay col led)
+  ;; Recalcule le trait du repere lbl : du bord du cadre, dans la direction de
+  ;; la camera, jusqu'au point d'insertion de la camera ; calque et couleur
+  ;; recopies du repere. line = trait a mettre a jour (nil : il est cree).
+  ;; Camera supprimee (ou handle ne designant pas une camera, ex. repere colle
+  ;; depuis un autre dessin) : rien n'est fait, le trait reste ou il est.
+  (setq ed (entget lbl))
+  (setq xd (SC3D:LBL-XDATA lbl))
+  (setq cam (handent (nth 1 xd)))
+  (if (SC3D:CAMERA-INSERT-P cam)
+    (progn
+      (setq camPt (cdr (assoc 10 (entget cam))))
+      (setq camPt (list (car camPt) (cadr camPt) (if (caddr camPt) (caddr camPt) 0.0)))
+      (setq ins (cdr (assoc 10 ed)))
+      (setq rot (cdr (assoc 50 ed)))
+      (setq sx (cdr (assoc 41 ed)))
+      (setq sy (cdr (assoc 42 ed)))
+      (if (null rot) (setq rot 0.0))
+      (if (or (null sx) (equal sx 0.0 1e-9)) (setq sx 1.0))
+      (if (or (null sy) (equal sy 0.0 1e-9)) (setq sy 1.0))
+      (setq ca (cos rot))
+      (setq sa (sin rot))
+
+      ;; Direction de la camera ramenee dans le repere du bloc (rotation et
+      ;; echelle de l'INSERT annulees), point de sortie du cadre, retour en WCS.
+      (setq dx (- (car camPt) (car ins)))
+      (setq dy (- (cadr camPt) (cadr ins)))
+      (setq lx (/ (+ (* dx ca) (* dy sa)) sx))
+      (setq ly (/ (- (* dy ca) (* dx sa)) sy))
+      (setq ex (SC3D:RECT-EXIT-POINT 0.0 0.0 (nth 2 xd) (nth 3 xd) lx ly))
+      (setq wx (* (car ex) sx))
+      (setq wy (* (cadr ex) sy))
+      (setq p1
+        (list
+          (+ (car ins) (- (* wx ca) (* wy sa)))
+          (+ (cadr ins) (+ (* wx sa) (* wy ca)))
+          (if (caddr ins) (caddr ins) 0.0)
+        )
+      )
+
+      (setq lay (cdr (assoc 8 ed)))
+      (setq col (if (assoc 62 ed) (cdr (assoc 62 ed)) 256))
+
+      (if (and line (setq led (entget line)))
+        ;; entmod seulement si quelque chose a change : une passe complete
+        ;; suit chaque deplacement, elle ne doit rien toucher d'autre.
+        (if
+          (not
+            (and
+              (equal (cdr (assoc 10 led)) p1 1e-6)
+              (equal (cdr (assoc 11 led)) camPt 1e-6)
+              (= (strcase (cdr (assoc 8 led))) (strcase lay))
+              (= (if (assoc 62 led) (cdr (assoc 62 led)) 256) col)
+            )
+          )
+          (progn
+            (setq led (SC3D:DXF-PUT led 10 p1))
+            (setq led (SC3D:DXF-PUT led 11 camPt))
+            (setq led (SC3D:DXF-PUT led 8 lay))
+            (setq led (SC3D:DXF-PUT led 62 col))
+            (entmod led)
+          )
+        )
+        (progn
+          (SC3D:LBL-REGAPP)
+          (entmakex
+            (list
+              '(0 . "LINE")
+              (cons 8 lay)
+              (cons 62 col)
+              (cons 10 p1)
+              (cons 11 camPt)
+              (list -3 (list *SC3D_LBL_APP* (cons 1000 "LEADER") (cons 1000 (cdr (assoc 5 ed)))))
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+;; ---------------------------------------------------------------- suivi (reacteurs)
+
+(defun SC3D:LBL-WATCH (e / h)
+  ;; Ajoute e (repere ou camera) aux objets surveilles par le reacteur d'objets.
+  (if (and e (entget e))
+    (progn
+      (setq h (cdr (assoc 5 (entget e))))
+      (if (not (member h *SC3D_LBL_WATCHED*))
+        (progn
+          (if *SC3D_LBL_OBJ_REACTOR*
+            (vlr-owner-add *SC3D_LBL_OBJ_REACTOR* (vlax-ename->vla-object e))
+            (setq *SC3D_LBL_OBJ_REACTOR*
+              (vlr-object-reactor
+                (list (vlax-ename->vla-object e))
+                nil
+                '(
+                  (:vlr-modified . SC3D:LBL-ON-MODIFIED)
+                  (:vlr-erased . SC3D:LBL-ON-ERASED)
+                )
+              )
+            )
+          )
+          (setq *SC3D_LBL_WATCHED* (cons h *SC3D_LBL_WATCHED*))
+        )
+      )
+    )
+  )
+)
+
+(defun SC3D:LBL-WATCH-PAIR (lbl / cam)
+  ;; Surveille le repere et sa camera : le trait suit l'un comme l'autre.
+  (SC3D:LBL-WATCH lbl)
+  (setq cam (handent (nth 1 (SC3D:LBL-XDATA lbl))))
+  (if (SC3D:CAMERA-INSERT-P cam)
+    (SC3D:LBL-WATCH cam)
+  )
+)
+
+(defun SC3D:LBL-REFRESH-ALL (watch / leaders lines)
+  ;; Passe complete sur tous les reperes du dessin : traits orphelins (repere
+  ;; supprime) effaces, un seul trait par repere (repere et trait copies
+  ;; ensemble...), trait recalcule, ou recree s'il manque (repere copie...).
+  ;; watch = T : reperes et cameras ajoutes aux objets surveilles - a ne jamais
+  ;; faire pendant une notification du reacteur d'objets lui-meme.
+  (setq leaders (SC3D:LBL-LEADERS))
+  (foreach pair leaders
+    (if (not (SC3D:LBL-P (handent (car pair))))
+      (foreach l (cdr pair) (entdel l))
+    )
+  )
+  (foreach lbl (SC3D:LBL-ALL)
+    (setq lines (cdr (assoc (cdr (assoc 5 (entget lbl))) leaders)))
+    (foreach l (cdr lines) (entdel l))
+    (SC3D:LBL-UPDATE-LEADER lbl (car lines))
+    (if watch (SC3D:LBL-WATCH-PAIR lbl))
+  )
+)
+
+(defun SC3D:LBL-LOCKED-CALL (fn args / r)
+  ;; Appelle fn en ignorant les notifications des reacteurs dues a ses propres
+  ;; modifications. Le verrou est leve meme en cas d'erreur : reste pose, plus
+  ;; aucun trait ne suivrait.
+  (setq *SC3D_LBL_BUSY* T)
+  (setq r (vl-catch-all-apply fn args))
+  (setq *SC3D_LBL_BUSY* nil)
+  (if (vl-catch-all-error-p r)
+    (progn
+      (princ (strcat "\nReperes nom du champ de vision - erreur : " (vl-catch-all-error-message r)))
+      nil
+    )
+    r
+  )
+)
+
+(defun SC3D:LBL-SAFE-REFRESH (watch)
+  (if (not *SC3D_LBL_BUSY*)
+    (SC3D:LBL-LOCKED-CALL 'SC3D:LBL-REFRESH-ALL (list watch))
+  )
+)
+
+(defun SC3D:LBL-ON-MODIFIED (obj reactor params)
+  (if (not *SC3D_LBL_BUSY*)
+    (progn
+      (setq *SC3D_LBL_DIRTY* T)
+      ;; Modification hors commande (palette Proprietes, poignees selon la
+      ;; version de BricsCAD...) : aucune fin de commande ne suit forcement, les
+      ;; traits sont donc mis a jour tout de suite - sans toucher a obj ni au
+      ;; reacteur, interdit pendant sa notification. *SC3D_LBL_DIRTY* reste
+      ;; pose : la prochaine fin de commande refera une passe complete.
+      (if (= (logand (getvar "CMDACTIVE") 1) 0)
+        (SC3D:LBL-SAFE-REFRESH nil)
+      )
+    )
+  )
+)
+
+(defun SC3D:LBL-ON-ERASED (obj reactor params)
+  (if (not *SC3D_LBL_BUSY*)
+    (setq *SC3D_LBL_DIRTY* T)
+  )
+)
+
+(defun SC3D:LBL-ON-COMMAND (reactor params / cmd)
+  ;; Fin (ou abandon) de commande : les traits sont recalcules apres DEPLACER,
+  ;; ROTATION, ETIRER... une fois tous les objets de la commande modifies.
+  (setq cmd (strcase (car params)))
+  (cond
+    (*SC3D_LBL_BUSY* nil)
+    ((member cmd *SC3D_LBL_UNDO_CMDS*)
+      (setq *SC3D_LBL_DIRTY* nil)
+    )
+    ((or *SC3D_LBL_DIRTY* (member cmd *SC3D_LBL_REFRESH_CMDS*))
+      (setq *SC3D_LBL_DIRTY* nil)
+      (SC3D:LBL-SAFE-REFRESH T)
+    )
+  )
+)
+
+(defun SC3D:LBL-START ()
+  ;; Les reacteurs ne sont pas enregistres dans le dessin : ils sont (re)crees a
+  ;; chaque chargement du script, pour les reperes deja presents.
+  (if (not *SC3D_LBL_CMD_REACTOR*)
+    (setq *SC3D_LBL_CMD_REACTOR*
+      (vlr-command-reactor
+        nil
+        '(
+          (:vlr-commandEnded . SC3D:LBL-ON-COMMAND)
+          (:vlr-commandCancelled . SC3D:LBL-ON-COMMAND)
+          (:vlr-commandFailed . SC3D:LBL-ON-COMMAND)
+        )
+      )
+    )
+  )
+  (foreach lbl (SC3D:LBL-ALL)
+    (SC3D:LBL-WATCH-PAIR lbl)
+  )
+)
+
+;; ---------------------------------------------------------------- creation
+
+(defun SC3D:LBL-DEFAULT-LAYER (/ lay col)
+  ;; Calque des nouveaux reperes : dernier calque choisi avec Texte > Calque du
+  ;; nom (memorise entre les sessions), recree avec sa couleur s'il n'existe pas
+  ;; dans ce dessin ; SC3D_TEXTES par defaut.
+  (setq lay (getenv "SC3D_LABEL_LAYER"))
+  (setq col (getenv "SC3D_LABEL_COLOR"))
+  (if (or (null lay) (not (snvalid lay)))
+    (progn
+      (setq lay "SC3D_TEXTES")
+      (setq col "7")
+    )
+  )
+  (if (not (tblsearch "LAYER" lay))
+    (SC3D:LAYER lay (if (and col (> (atoi col) 0)) (atoi col) 7))
+  )
+  lay
+)
+
+(defun SC3D:LBL-DEFAULT-POINT (cam hw / ed base rot d)
+  ;; Position initiale d'un repere : derriere la camera (a l'oppose de son
+  ;; champ de vision, dirige vers +X local), le cadre a 3 m de la camera.
+  (setq ed (entget cam))
+  (setq base (cdr (assoc 10 ed)))
+  (setq rot (cdr (assoc 50 ed)))
+  (if (null rot) (setq rot 0.0))
+  (setq d (+ hw (* 2.0 *SC3D_LBL_TEXTH*)))
+  (list
+    (- (car base) (* d (cos rot)))
+    (- (cadr base) (* d (sin rot)))
+    (if (caddr base) (caddr base) 0.0)
+  )
+)
+
+(defun SC3D:OLD-LABEL-POINT (e / ed ins sub sed pt)
+  ;; Repere des versions precedentes (bloc "SC3D_LABEL_*" en coordonnees
+  ;; absolues insere en 0,0, trait fige dans le bloc) : centre de son cadre,
+  ;; c.-a-d. le point de son texte, decale du deplacement eventuel de l'INSERT.
+  ;; Sert a le remplacer au meme endroit. nil si e n'en est pas un.
+  (setq ed (entget e))
+  (if
+    (and
+      (= (cdr (assoc 0 ed)) "INSERT")
+      (wcmatch (strcase (cdr (assoc 2 ed))) "SC3D_LABEL_*")
+    )
+    (progn
+      (setq ins (cdr (assoc 10 ed)))
+      (setq sub (tblobjname "BLOCK" (cdr (assoc 2 ed))))
+      (while
+        (and
+          (null pt)
+          sub
+          (setq sub (entnext sub))
+          (/= (cdr (assoc 0 (setq sed (entget sub)))) "ENDBLK")
+        )
+        (if (= (cdr (assoc 0 sed)) "MTEXT")
+          (setq pt (cdr (assoc 10 sed)))
+        )
+      )
+      (if pt
+        (list (+ (car pt) (car ins)) (+ (cadr pt) (cadr ins)) (+ (caddr pt) (caddr ins)))
+      )
+    )
+  )
+)
+
+(defun SC3D:LBL-CREATE (cam pt lay cvname / blockName size ins)
+  ;; Cree un repere centre en pt (WCS) sur le calque lay, lie a la camera cam,
+  ;; et son trait. Retourne l'INSERT du repere.
+  (SC3D:LBL-REGAPP)
+  (setq blockName (SC3D:UNIQUE-BLOCK-NAME "SC3D_LABEL_"))
+  (setq size (SC3D:LBL-DEFINE-BLOCK blockName cvname))
   (setq ins
     (entmakex
       (list
         '(0 . "INSERT")
-        (cons 8 "SC3D_TEXTES")
+        (cons 8 lay)
         (cons 2 blockName)
-        (cons 10 (list 0.0 0.0 0.0))
+        (cons 10 pt)
         '(41 . 1.0)
         '(42 . 1.0)
         '(43 . 1.0)
         (cons 50 0.0)
+        (list -3 (cons *SC3D_LBL_APP* (SC3D:LBL-XDATA-LIST (cdr (assoc 5 (entget cam))) (car size) (cadr size))))
       )
     )
   )
+  (if ins (SC3D:LBL-UPDATE-LEADER ins nil))
   ins
+)
+
+(defun SC3D:LBL-RELINK (lbl cam cvname / size)
+  ;; Met un repere existant a jour : nom (bloc redefini en place : position,
+  ;; rotation et calque de l'INSERT conserves), camera liee, puis trait.
+  (setq size (SC3D:LBL-DEFINE-BLOCK (cdr (assoc 2 (entget lbl))) cvname))
+  (SC3D:LBL-SET-XDATA lbl (SC3D:LBL-XDATA-LIST (cdr (assoc 5 (entget cam))) (car size) (cadr size)))
+  (SC3D:LBL-UPDATE-LEADER lbl (SC3D:LBL-LEADER-OF lbl))
+)
+
+(defun SC3D:LBL-FOLLOW-CAMERA (lbl cam / vals cvname)
+  ;; Camera recreee par Modifier : son repere garde sa position et son calque,
+  ;; prend le nouveau nom et est relie a la nouvelle camera. Nom efface : le
+  ;; repere (et son trait) est supprime.
+  (setq vals (SC3D:CFG-VALS (SC3D:GET-XDATA cam)))
+  (setq cvname (cdr (assoc 'cvname vals)))
+  (if (or (null cvname) (= cvname ""))
+    (progn
+      (SC3D:LBL-DELETE-LEADERS lbl)
+      (entdel lbl)
+    )
+    (progn
+      (SC3D:LBL-RELINK lbl cam cvname)
+      (SC3D:SET-XDATA cam (SC3D:CFG-STR vals (cdr (assoc 5 (entget lbl)))))
+      (SC3D:LBL-WATCH cam)
+    )
+  )
+)
+
+(defun SC3D:LBL-GENERATE (cam / cfg vals cvname old pt lbl)
+  ;; Repere de la camera cam : cree s'il n'existe pas, sinon mis a jour avec le
+  ;; nom actuel (position et calque choisis par l'utilisateur conserves).
+  ;; Retourne "NEW", "UPD", ou nil si la camera n'a pas de nom.
+  (setq cfg (SC3D:GET-XDATA cam))
+  (setq vals (if cfg (SC3D:CFG-VALS cfg) nil))
+  (setq cvname (cdr (assoc 'cvname vals)))
+  (cond
+    ((or (null vals) (null cvname) (= cvname "")) nil)
+    ((and (setq old (SC3D:LINKED-TEXT vals cam)) (SC3D:LBL-P old))
+      (SC3D:LBL-RELINK old cam cvname)
+      "UPD"
+    )
+    (T
+      ;; Un seul texte lie par camera : texte "Type" ou repere d'une version
+      ;; precedente supprime. Ce dernier est remplace au meme endroit ; sinon le
+      ;; repere est pose derriere la camera.
+      (if old (setq pt (SC3D:OLD-LABEL-POINT old)))
+      (SC3D:DELETE-TEXT-HANDLE vals cam)
+      (if (null pt)
+        (setq pt (SC3D:LBL-DEFAULT-POINT cam (car (SC3D:LBL-SIZE cvname))))
+      )
+      (setq lbl (SC3D:LBL-CREATE cam pt (SC3D:LBL-DEFAULT-LAYER) cvname))
+      (SC3D:SET-XDATA cam (SC3D:CFG-STR vals (cdr (assoc 5 (entget lbl)))))
+      "NEW"
+    )
+  )
 )
 
 (defun SC3D:GENERER-TEXTE-TYPE (e vals base rot view / txtPt txt txtH newCfg)
   ;; Supprime l'ancien texte lie (s'il existe) avant d'en creer un nouveau,
   ;; pour ne jamais en laisser deux en meme temps.
-  (SC3D:DELETE-TEXT-HANDLE vals)
+  (SC3D:DELETE-TEXT-HANDLE vals e)
 
   (setq *SC3D_BASE* (list (car base) (cadr base) (if (caddr base) (caddr base) 0.0)))
   (setq *SC3D_CA* (cos rot))
@@ -6061,67 +6601,313 @@
   (princ "\nTexte genere.")
 )
 
-(defun SC3D:GENERER-TEXTE-NOM (e vals base / cvname camPt pt ins newCfg)
-  (setq cvname (cdr (assoc 'cvname vals)))
-  (if (or (null cvname) (= cvname ""))
-    (princ "\nAucun nom de champ de vision defini pour cette camera (voir Modifier).")
+(defun SC3D:GENERER-TEXTE-NOM-ALL (cams / r nNew nUpd nSkip)
+  (setq nNew 0)
+  (setq nUpd 0)
+  (setq nSkip 0)
+  (foreach cam cams
+    ;; Une camera en erreur ne doit pas empecher de traiter les suivantes.
+    (setq r (vl-catch-all-apply 'SC3D:LBL-GENERATE (list cam)))
+    (cond
+      ((vl-catch-all-error-p r)
+        (princ (strcat "\nErreur : " (vl-catch-all-error-message r)))
+        (setq nSkip (+ nSkip 1))
+      )
+      ((= r "NEW") (setq nNew (+ nNew 1)))
+      ((= r "UPD") (setq nUpd (+ nUpd 1)))
+      (T (setq nSkip (+ nSkip 1)))
+    )
+  )
+  (list nNew nUpd nSkip)
+)
+
+(defun SC3D:GENERER-TEXTE-NOM (cams / res)
+  ;; Reperes "nom du champ de vision" de toutes les cameras cams, crees d'un coup
+  ;; (derriere chaque camera) : a deplacer ensuite librement, le trait suit.
+  (setq res (SC3D:LBL-LOCKED-CALL 'SC3D:GENERER-TEXTE-NOM-ALL (list cams)))
+  ;; Passe complete : met les nouveaux reperes (et leurs cameras) sous surveillance.
+  (SC3D:LBL-SAFE-REFRESH T)
+  (SC3D:REGEN-VIEW)
+  (if res
     (progn
-      (setq camPt (list (car base) (cadr base) (if (caddr base) (caddr base) 0.0)))
-      (setq pt (getpoint "\nPoint d'insertion du repere (nom du champ de vision) : "))
+      (princ
+        (strcat
+          "\n" (itoa (car res)) " repere(s) cree(s), " (itoa (cadr res)) " mis a jour."
+        )
+      )
+      (if (> (caddr res) 0)
+        (princ
+          (strcat
+            "\n" (itoa (caddr res))
+            " camera(s) ignoree(s) : aucun nom de champ de vision (voir Modifier)."
+          )
+        )
+      )
+      (if (> (+ (car res) (cadr res)) 0)
+        (princ "\nDeplacez les reperes ou vous voulez : le trait reste relie a la camera.")
+      )
+    )
+  )
+)
 
-      (if (null pt)
-        (princ "\nAnnule.")
+;; ---------------------------------------------------------------- calque des reperes
+
+(defun SC3D:LAYER-NAMES (/ r nm out)
+  ;; Calques du dessin (hors calques de references externes), tries.
+  (setq out '())
+  (setq r (tblnext "LAYER" T))
+  (while r
+    (setq nm (cdr (assoc 2 r)))
+    (if (not (vl-string-search "|" nm))
+      (setq out (cons nm out))
+    )
+    (setq r (tblnext "LAYER"))
+  )
+  (acad_strlsort out)
+)
+
+(defun SC3D:LAYER-COLOR (name / r)
+  (setq r (tblsearch "LAYER" name))
+  (if r (abs (cdr (assoc 62 r))) 7)
+)
+
+(defun SC3D:SET-LAYER-COLOR (name color / old)
+  ;; Comme SC3D:LAYER, mais un calque eteint (couleur negative) le reste.
+  (setq old (cdr (assoc 62 (tblsearch "LAYER" name))))
+  (SC3D:LAYER name (if (and old (< old 0)) (- color) color))
+)
+
+(defun SC3D:MAKE-LAYER-DCL (/ fn f)
+  (setq fn (strcat (getvar "TEMPPREFIX") "sc3d_label_layer.dcl"))
+  (setq f (open fn "w"))
+
+  (write-line "sc3d_label_layer : dialog {" f)
+  (write-line "  label = \"SNCF - Calque du nom du champ de vision\";" f)
+  (write-line "  : column {" f)
+
+  (write-line "    : boxed_column {" f)
+  (write-line "      label = \"Calque du cadre, du nom et du trait\";" f)
+  (write-line "      : popup_list { key = \"lay\"; label = \"Calque existant\"; width = 46; }" f)
+  (write-line "      : edit_box { key = \"newlay\"; label = \"Ou nouveau calque\"; edit_width = 30; }" f)
+  (write-line "      : row {" f)
+  (write-line "        : button { key = \"btn_color\"; label = \"Couleur...\"; width = 12; fixed_width = true; }" f)
+  (write-line "        : image { key = \"colimg\"; width = 6; height = 1.5; fixed_width = true; fixed_height = true; color = 0; }" f)
+  (write-line "        : text { key = \"colinfo\"; label = \"\"; width = 26; }" f)
+  (write-line "      }" f)
+  (write-line "    }" f)
+
+  (write-line "    : errtile { key = \"msg\"; }" f)
+  (write-line "    ok_cancel;" f)
+  (write-line "  }" f)
+  (write-line "}" f)
+
+  (close f)
+  fn
+)
+
+(defun SC3D:LLD-TARGET (/ nm)
+  ;; Calque vise : nouveau nom saisi, sinon calque choisi dans la liste.
+  (setq nm (vl-string-trim " " (get_tile "newlay")))
+  (if (= nm "")
+    (nth (atoi (get_tile "lay")) *SC3D_LLD_LAYERS*)
+    nm
+  )
+)
+
+(defun SC3D:LLD-SHOW-COLOR ()
+  (start_image "colimg")
+  (fill_image 0 0 (dimx_tile "colimg") (dimy_tile "colimg") *SC3D_LLD_COLOR*)
+  (end_image)
+  (set_tile "colinfo" (strcat "Couleur du calque : " (itoa *SC3D_LLD_COLOR*)))
+)
+
+(defun SC3D:LLD-TARGET-CHANGED (/ nm)
+  ;; Calque existant : sa couleur actuelle est affichee. Calque a creer : la
+  ;; couleur affichee (ou choisie) sera la sienne.
+  (setq nm (SC3D:LLD-TARGET))
+  (if (tblsearch "LAYER" nm)
+    (progn
+      (setq *SC3D_LLD_COLOR* (SC3D:LAYER-COLOR nm))
+      (setq *SC3D_LLD_COLOR_SET* nil)
+    )
+  )
+  (set_tile "msg" "")
+  (SC3D:LLD-SHOW-COLOR)
+)
+
+(defun SC3D:LLD-LAY-CHANGED ()
+  ;; Un calque choisi dans la liste remplace le nouveau nom eventuel.
+  (set_tile "newlay" "")
+  (SC3D:LLD-TARGET-CHANGED)
+)
+
+(defun SC3D:LLD-PICK-COLOR (/ c)
+  (setq c (acad_colordlg *SC3D_LLD_COLOR* nil))
+  (if c
+    (progn
+      (setq *SC3D_LLD_COLOR* c)
+      (setq *SC3D_LLD_COLOR_SET* T)
+      (SC3D:LLD-SHOW-COLOR)
+    )
+  )
+)
+
+(defun SC3D:LLD-ACCEPT (/ nm)
+  (setq nm (SC3D:LLD-TARGET))
+  (if (not (snvalid nm))
+    (set_tile "msg" "Nom de calque invalide.")
+    (progn
+      (setq SC3D_LLD_RET (list nm *SC3D_LLD_COLOR* *SC3D_LLD_COLOR_SET*))
+      (done_dialog 1)
+    )
+  )
+)
+
+(defun SC3D:LAYER-DIALOG (curLay / dcl id result)
+  ;; Choix du calque des reperes (existant ou nouveau) et de sa couleur.
+  ;; Retourne (nom couleur couleurModifiee) ou nil si annule.
+  (setq dcl (SC3D:MAKE-LAYER-DCL))
+  (setq id (load_dialog dcl))
+
+  (if (not (new_dialog "sc3d_label_layer" id))
+    nil
+    (progn
+      (setq *SC3D_LLD_LAYERS* (SC3D:LAYER-NAMES))
+      (SC3D:SET-POPUP-LIST "lay" *SC3D_LLD_LAYERS* curLay)
+      (setq *SC3D_LLD_COLOR* (SC3D:LAYER-COLOR curLay))
+      (setq *SC3D_LLD_COLOR_SET* nil)
+      (SC3D:LLD-SHOW-COLOR)
+
+      (action_tile "lay" "(SC3D:LLD-LAY-CHANGED)")
+      (action_tile "newlay" "(SC3D:LLD-TARGET-CHANGED)")
+      (action_tile "btn_color" "(SC3D:LLD-PICK-COLOR)")
+      (action_tile "accept" "(SC3D:LLD-ACCEPT)")
+      (action_tile "cancel" "(done_dialog 0)")
+
+      (if (= (start_dialog) 1)
+        (setq result SC3D_LLD_RET)
+        (setq result nil)
+      )
+
+      (unload_dialog id)
+      result
+    )
+  )
+)
+
+(defun SC3D:SELECT-LABELS (/ ss i e xd out)
+  ;; Selection de reperes ; un trait selectionne vaut pour son repere.
+  (princ "\nSelectionner les reperes (nom du champ de vision) : ")
+  (setq ss (ssget (list '(0 . "INSERT,LINE") (list -3 (list *SC3D_LBL_APP*)))))
+  (setq out '())
+  (if ss
+    (progn
+      (setq i 0)
+      (while (< i (sslength ss))
+        (setq e (ssname ss i))
+        (setq xd (SC3D:LBL-XDATA e))
+        (if (and xd (= (car xd) "LEADER"))
+          (setq e (handent (cadr xd)))
+        )
+        (if (and (SC3D:LBL-P e) (not (member e out)))
+          (setq out (cons e out))
+        )
+        (setq i (+ i 1))
+      )
+    )
+  )
+  out
+)
+
+(defun SC3D:LBL-APPLY-LAYER (lbls lay / ed)
+  (foreach lbl lbls
+    (setq ed (entget lbl))
+    (setq ed (SC3D:DXF-PUT ed 8 lay))
+    ;; Couleur DuCalque : c'est le calque qui colore le cadre, le nom et le trait.
+    (setq ed (SC3D:DXF-PUT ed 62 256))
+    (entmod ed)
+    (entupd lbl)
+  )
+)
+
+(defun SC3D:CMD-CALQUE-NOM (/ lbls res lay)
+  (setq lbls (SC3D:SELECT-LABELS))
+  (if (not lbls)
+    (princ "\nAucun repere selectionne.")
+    (progn
+      (setq res (SC3D:LAYER-DIALOG (cdr (assoc 8 (entget (car lbls))))))
+      (if res
         (progn
-          ;; Supprime l'ancien texte lie (s'il existe) avant d'en creer un nouveau,
-          ;; pour ne jamais en laisser deux en meme temps.
-          (SC3D:DELETE-TEXT-HANDLE vals)
+          (setq lay (car res))
+          (cond
+            ((not (tblsearch "LAYER" lay)) (SC3D:LAYER lay (cadr res)))
+            ((caddr res) (SC3D:SET-LAYER-COLOR lay (cadr res)))
+          )
+          ;; Calque repris pour les prochains reperes (memorise entre les sessions).
+          (setenv "SC3D_LABEL_LAYER" lay)
+          (setenv "SC3D_LABEL_COLOR" (itoa (SC3D:LAYER-COLOR lay)))
 
-          (setq ins (SC3D:CREATE-LABEL-CV camPt pt cvname))
-
-          (setq newCfg (SC3D:CFG-STR vals (cdr (assoc 5 (entget ins)))))
-          (SC3D:SET-XDATA e newCfg)
-
-          (command "_.REGEN")
-          (princ "\nTexte genere.")
+          (SC3D:LBL-LOCKED-CALL 'SC3D:LBL-APPLY-LAYER (list lbls lay))
+          ;; Les traits prennent le calque et la couleur de leur repere.
+          (SC3D:LBL-SAFE-REFRESH T)
+          (SC3D:REGEN-VIEW)
+          (princ
+            (strcat
+              "\n" (itoa (length lbls)) " repere(s) sur le calque " lay
+              " (couleur " (itoa (SC3D:LAYER-COLOR lay)) ")."
+            )
+          )
         )
       )
     )
   )
 )
 
-(defun SC3D:CMD-GENERER-TEXTE (/ e ed cfg vals base rot view mode)
-  ;; Cree (ou recree) le texte recapitulatif d'une camera existante, a la demande
-  ;; (le texte n'est plus genere automatiquement par Creer/Modifier).
-  ;; Deux contenus possibles : le type de camera (texte recapitulatif fixe, comme
-  ;; avant) ou le nom du champ de vision (repere rectangle + fleche, positionne
-  ;; librement puis relie a la camera par une fleche directe).
-  (setq e (SC3D:SELECT-CAMERA-BLOCK "\nSelectionner le bloc camera pour generer le texte : "))
+(defun SC3D:CMD-GENERER-TEXTE (/ mode cams e ed cfg vals base rot view)
+  ;; Textes lies aux cameras, crees a la demande (ils ne sont plus generes
+  ;; automatiquement par Creer/Modifier) :
+  ;;   - Type   : texte recapitulatif fixe du type de camera (une camera) ;
+  ;;   - Nom    : repere nom du champ de vision (cadre + trait vers la camera)
+  ;;              de toutes les cameras selectionnees, a deplacer ensuite
+  ;;              librement : le trait suit (cf. section REPERE ci-dessus) ;
+  ;;   - Calque : calque, et donc couleur, de reperes existants.
+  (initget "Type Nom Calque")
+  (setq mode
+    (getkword "\nTexte [Type de camera/Nom du champ de vision/Calque du nom] <Type> : ")
+  )
+  (if (null mode) (setq mode "Type"))
 
-  (if e
-    (progn
-      (setq ed (entget e))
-      (setq cfg (SC3D:GET-XDATA e))
-      (setq vals (if cfg (SC3D:CFG-VALS cfg) nil))
-
-      (if vals
+  (cond
+    ((= mode "Nom")
+      (princ "\nSelectionner les cameras (champs de vision) : ")
+      (setq cams (SC3D:SSGET-CAMERAS nil))
+      (if cams
+        (SC3D:GENERER-TEXTE-NOM cams)
+        (princ "\nAucun bloc camera selectionne.")
+      )
+    )
+    ((= mode "Calque")
+      (SC3D:CMD-CALQUE-NOM)
+    )
+    (T
+      (setq e (SC3D:SELECT-CAMERA-BLOCK "\nSelectionner le bloc camera pour generer le texte : "))
+      (if e
         (progn
-          (setq base (cdr (assoc 10 ed)))
-          (setq rot (cdr (assoc 50 ed)))
-          (if (not rot) (setq rot 0.0))
-          (setq view (cdr (assoc 'view vals)))
+          (setq ed (entget e))
+          (setq cfg (SC3D:GET-XDATA e))
+          (setq vals (if cfg (SC3D:CFG-VALS cfg) nil))
 
-          (initget "Type Nom")
-          (setq mode
-            (getkword "\nContenu du texte [Type de camera/Nom du champ de vision] <Type> : ")
-          )
-          (if (null mode) (setq mode "Type"))
-
-          (if (= mode "Nom")
-            (SC3D:GENERER-TEXTE-NOM e vals base)
-            (SC3D:GENERER-TEXTE-TYPE e vals base rot view)
+          (if vals
+            (progn
+              (setq base (cdr (assoc 10 ed)))
+              (setq rot (cdr (assoc 50 ed)))
+              (if (not rot) (setq rot 0.0))
+              (setq view (cdr (assoc 'view vals)))
+              (SC3D:GENERER-TEXTE-TYPE e vals base rot view)
+            )
+            (princ "\nImpossible de lire les informations de cette camera.")
           )
         )
-        (princ "\nImpossible de lire les informations de cette camera.")
       )
     )
   )
@@ -7010,6 +7796,10 @@
 (if (= (SC3D:CAM-SOURCE) "GITHUB")
   (SC3D:ENSURE-GITHUB-CAMERAS)
 )
+
+;; Reperes "nom du champ de vision" : reacteurs qui gardent le trait relie a la
+;; camera (cf. SC3D:LBL-START), jamais bloquants pour le chargement du script.
+(vl-catch-all-apply 'SC3D:LBL-START nil)
 
 ;; ------------------------------------------------------------------------------------ C_S_IA_IMAGE_VECTEUR ------------------------------------------------------------------------------------
 
