@@ -5972,17 +5972,15 @@
 ;; Cadre et nom sont sur le calque 0 en couleur DuBloc, et le trait recopie le
 ;; calque et la couleur de l'INSERT : changer le calque du repere (Texte >
 ;; Calque du nom) change donc le calque et la couleur des trois.
+;;
+;; Copier/coller (COPIER, Ctrl+C/Ctrl+V, MIROIR...) : les copies gardent les
+;; handles de l'original dans leurs xdata. Les entites creees par chaque
+;; commande sont donc retrouvees (cf. SC3D:LBL-NEW-ENTS) et reliees entre elles
+;; (cf. SC3D:LBL-FIX-COPIES) : la copie devient independante de l'original.
 ;; ------------------------------------------------------------------------------------
 
 (setq *SC3D_LBL_APP* "SC3D_LABEL")
 (setq *SC3D_LBL_TEXTH* 1.5)
-;; Commandes qui peuvent creer des reperes ou des traits sans modifier un objet
-;; deja surveille (copie...) : passe complete apres elles.
-(setq *SC3D_LBL_REFRESH_CMDS*
-  '("COPY" "PASTECLIP" "PASTEORIG" "MIRROR" "ARRAY" "ARRAYCLASSIC" "ARRAYRECT"
-    "ARRAYPOLAR" "ARRAYPATH" "GRIP_STRETCH" "GRIP_MOVE" "GRIP_ROTATE" "GRIP_SCALE"
-    "GRIP_MIRROR")
-)
 ;; Annulation/retablissement : l'etat restaure est laisse tel quel. Si les
 ;; corrections faites par le reacteur formaient leur propre etape d'annulation,
 ;; les refaire apres chaque U empecherait de remonter plus loin dans l'historique.
@@ -6316,10 +6314,29 @@
   )
 )
 
-(defun SC3D:LBL-REFRESH-ALL (watch / leaders lines)
+(defun SC3D:PT2 (p)
+  (list (car p) (cadr p))
+)
+
+(defun SC3D:NEAREST (pt ents / best bestD d)
+  ;; Entite de ents dont le point DXF 10 (insertion, ou debut d'une ligne) est
+  ;; le plus proche de pt, en plan. nil si ents est vide.
+  (foreach e ents
+    (setq d (distance (SC3D:PT2 pt) (SC3D:PT2 (cdr (assoc 10 (entget e))))))
+    (if (or (null best) (< d bestD))
+      (progn
+        (setq best e)
+        (setq bestD d)
+      )
+    )
+  )
+  best
+)
+
+(defun SC3D:LBL-REFRESH-ALL (watch / leaders lines keep)
   ;; Passe complete sur tous les reperes du dessin : traits orphelins (repere
-  ;; supprime) effaces, un seul trait par repere (repere et trait copies
-  ;; ensemble...), trait recalcule, ou recree s'il manque (repere copie...).
+  ;; supprime) effaces, un seul trait par repere, trait recalcule, ou recree
+  ;; s'il manque (repere copie sans son trait...).
   ;; watch = T : reperes et cameras ajoutes aux objets surveilles - a ne jamais
   ;; faire pendant une notification du reacteur d'objets lui-meme.
   (setq leaders (SC3D:LBL-LEADERS))
@@ -6330,9 +6347,191 @@
   )
   (foreach lbl (SC3D:LBL-ALL)
     (setq lines (cdr (assoc (cdr (assoc 5 (entget lbl))) leaders)))
-    (foreach l (cdr lines) (entdel l))
-    (SC3D:LBL-UPDATE-LEADER lbl (car lines))
+    ;; Plusieurs traits (cas non repris par SC3D:LBL-FIX-COPIES) : on garde
+    ;; celui qui part de ce repere, pas un trait reste ailleurs.
+    (setq keep (SC3D:NEAREST (cdr (assoc 10 (entget lbl))) lines))
+    (foreach l lines
+      (if (not (equal l keep)) (entdel l))
+    )
+    (SC3D:LBL-UPDATE-LEADER lbl keep)
     (if watch (SC3D:LBL-WATCH-PAIR lbl))
+  )
+)
+
+;; ---------------------------------------------------------------- copier / coller
+
+(defun SC3D:LBL-SET-MARK ()
+  ;; Derniere entite du dessin : ce qui est cree ensuite (copie, collage...)
+  ;; est retrouve par SC3D:LBL-NEW-ENTS. Deplace apres chacune de nos propres
+  ;; modifications (cf. SC3D:LBL-LOCKED-CALL), qui ne sont donc jamais prises
+  ;; pour une copie.
+  (setq *SC3D_LBL_MARK* (entlast))
+)
+
+(defun SC3D:LBL-NEW-ENTS (/ r)
+  ;; Entites creees depuis *SC3D_LBL_MARK* (tout le dessin s'il etait vide).
+  (setq r
+    (vl-catch-all-apply
+      '(lambda (/ e out)
+        (setq e (if *SC3D_LBL_MARK* (entnext *SC3D_LBL_MARK*) (entnext)))
+        (while e
+          (setq out (cons e out))
+          (setq e (entnext e))
+        )
+        out
+      )
+      nil
+    )
+  )
+  (if (vl-catch-all-error-p r) nil r)
+)
+
+(defun SC3D:LBL-REACH (lbl / ed xd s)
+  ;; Distance maxi entre le centre du repere et un point de son cadre (demi-
+  ;; diagonale, echelle de l'INSERT comprise), avec une petite tolerance.
+  (setq ed (entget lbl))
+  (setq xd (SC3D:LBL-XDATA lbl))
+  (setq s (SC3D:MAX (abs (cdr (assoc 41 ed))) (abs (cdr (assoc 42 ed)))))
+  (+ (* s (sqrt (+ (* (nth 2 xd) (nth 2 xd)) (* (nth 3 xd) (nth 3 xd))))) 1e-3)
+)
+
+(defun SC3D:LBL-FIX-COPIES (ents / ed typ cams lbls leaders texts claimed links src led p1 p2 best cfg vals twins pr e h)
+  ;; ents : entites creees par la derniere commande. Un repere, son trait et sa
+  ;; camera copies (ou colles) ensemble forment un groupe independant de
+  ;; l'original. Sans cette correction, le repere colle resterait lie a la
+  ;; camera d'origine (trait tire jusqu'a elle), le trait colle au repere
+  ;; d'origine, et la camera collee au texte de l'originale.
+  ;; Retourne T si ents contient des cameras, reperes ou traits.
+  (foreach e ents
+    (setq ed (entget e))
+    (setq typ (cdr (assoc 0 ed)))
+    (cond
+      ((= typ "INSERT")
+        (cond
+          ((SC3D:CAMERA-INSERT-P e) (setq cams (cons e cams)))
+          ((SC3D:LBL-P e) (setq lbls (cons e lbls)))
+        )
+      )
+      ((and (= typ "LINE") (= (car (SC3D:LBL-XDATA e)) "LEADER"))
+        (setq leaders (cons e leaders))
+      )
+      ((and (= typ "MTEXT") (SC3D:GET-XDATA e))
+        (setq texts (cons e texts))
+      )
+    )
+  )
+
+  ;; 1. Trait copie (son repere d'origine n'est pas nouveau) : rattache au
+  ;;    repere copie dont il part (le plus proche de son debut, a portee du
+  ;;    cadre), et a la camera copiee sur laquelle il arrive. Trait copie sans
+  ;;    son repere : doublon sans objet, supprime.
+  (foreach ln leaders
+    (setq src (handent (cadr (SC3D:LBL-XDATA ln))))
+    (if (not (member src lbls))
+      (progn
+        (setq led (entget ln))
+        (setq p1 (cdr (assoc 10 led)))
+        (setq p2 (SC3D:PT2 (cdr (assoc 11 led))))
+        (setq best
+          (SC3D:NEAREST
+            p1
+            (vl-remove-if-not
+              '(lambda (l)
+                (and
+                  (not (member l claimed))
+                  (<= (distance (SC3D:PT2 p1) (SC3D:PT2 (cdr (assoc 10 (entget l))))) (SC3D:LBL-REACH l))
+                )
+              )
+              lbls
+            )
+          )
+        )
+        (if best
+          (progn
+            (setq claimed (cons best claimed))
+            (SC3D:LBL-SET-XDATA ln (list (cons 1000 "LEADER") (cons 1000 (cdr (assoc 5 (entget best))))))
+            (foreach c cams
+              (if (and (not (assoc best links)) (equal (SC3D:PT2 (cdr (assoc 10 (entget c)))) p2 1e-3))
+                (setq links (cons (cons best c) links))
+              )
+            )
+          )
+          (entdel ln)
+        )
+      )
+    )
+  )
+
+  ;; 2. Repere copie sans son trait, avec sa camera : rattache a la copie de
+  ;;    sa camera (meme configuration) la plus proche. Repere copie seul :
+  ;;    second repere de la meme camera, lien conserve.
+  (foreach l lbls
+    (if (not (member l claimed))
+      (progn
+        (setq src (handent (nth 1 (SC3D:LBL-XDATA l))))
+        (if (not (member src cams))
+          (progn
+            (setq cfg (if (SC3D:CAMERA-INSERT-P src) (SC3D:GET-XDATA src) nil))
+            ;; Camera d'origine introuvable (colle depuis un autre dessin) :
+            ;; n'importe quelle camera collee avec lui.
+            (setq twins
+              (if cfg
+                (vl-remove-if-not '(lambda (c) (= (SC3D:GET-XDATA c) cfg)) cams)
+                cams
+              )
+            )
+            (if twins
+              (setq links (cons (cons l (SC3D:NEAREST (cdr (assoc 10 (entget l))) twins)) links))
+            )
+          )
+        )
+      )
+    )
+  )
+
+  ;; 3. Liens repere -> camera copiee.
+  (foreach pr links
+    (setq e (SC3D:LBL-XDATA (car pr)))
+    (SC3D:LBL-SET-XDATA
+      (car pr)
+      (SC3D:LBL-XDATA-LIST (cdr (assoc 5 (entget (cdr pr)))) (nth 2 e) (nth 3 e))
+    )
+  )
+
+  ;; 4. Texte lie d'une camera copiee : son repere copie, ou la copie de son
+  ;;    texte "Type" (meme configuration) ; sinon aucun, pour qu'un Texte sur la
+  ;;    copie ne supprime jamais le texte de l'originale.
+  (foreach c cams
+    (setq cfg (SC3D:GET-XDATA c))
+    (setq vals (SC3D:CFG-VALS cfg))
+    (if vals
+      (progn
+        (setq pr (car (vl-remove-if-not '(lambda (x) (equal (cdr x) c)) links)))
+        (setq twins (vl-remove-if-not '(lambda (x) (= (SC3D:GET-XDATA x) cfg)) texts))
+        (setq h
+          (cond
+            (pr (cdr (assoc 5 (entget (car pr)))))
+            (twins (cdr (assoc 5 (entget (SC3D:NEAREST (cdr (assoc 10 (entget c))) twins)))))
+            ;; Son propre repere (camera recreee par Modifier...) : conserve.
+            ((and (setq e (SC3D:LINKED-TEXT vals c)) (SC3D:LBL-P e)) (cdr (assoc 'texth vals)))
+            (T "")
+          )
+        )
+        (if (/= h (cdr (assoc 'texth vals)))
+          (SC3D:SET-XDATA c (SC3D:CFG-STR vals h))
+        )
+      )
+    )
+  )
+
+  (if (or cams lbls leaders) T nil)
+)
+
+(defun SC3D:LBL-AFTER-COMMAND (ents dirty)
+  ;; Copies relinkees d'abord, pour que la passe complete trace chaque trait
+  ;; vers la bonne camera.
+  (if (or (SC3D:LBL-FIX-COPIES ents) dirty)
+    (SC3D:LBL-REFRESH-ALL T)
   )
 )
 
@@ -6343,6 +6542,7 @@
   (setq *SC3D_LBL_BUSY* T)
   (setq r (vl-catch-all-apply fn args))
   (setq *SC3D_LBL_BUSY* nil)
+  (SC3D:LBL-SET-MARK)
   (if (vl-catch-all-error-p r)
     (progn
       (princ (strcat "\nReperes nom du champ de vision - erreur : " (vl-catch-all-error-message r)))
@@ -6380,18 +6580,26 @@
   )
 )
 
-(defun SC3D:LBL-ON-COMMAND (reactor params / cmd)
+(defun SC3D:LBL-ON-COMMAND (reactor params / cmd ents dirty)
   ;; Fin (ou abandon) de commande : les traits sont recalcules apres DEPLACER,
-  ;; ROTATION, ETIRER... une fois tous les objets de la commande modifies.
+  ;; ROTATION, ETIRER... une fois tous les objets de la commande modifies, et
+  ;; les copies creees par la commande (quelle qu'elle soit) sont separees de
+  ;; leur original.
   (setq cmd (strcase (car params)))
   (cond
     (*SC3D_LBL_BUSY* nil)
     ((member cmd *SC3D_LBL_UNDO_CMDS*)
       (setq *SC3D_LBL_DIRTY* nil)
+      (SC3D:LBL-SET-MARK)
     )
-    ((or *SC3D_LBL_DIRTY* (member cmd *SC3D_LBL_REFRESH_CMDS*))
+    (T
+      (setq ents (SC3D:LBL-NEW-ENTS))
+      (setq dirty *SC3D_LBL_DIRTY*)
       (setq *SC3D_LBL_DIRTY* nil)
-      (SC3D:LBL-SAFE-REFRESH T)
+      (if (or ents dirty)
+        (SC3D:LBL-LOCKED-CALL 'SC3D:LBL-AFTER-COMMAND (list ents dirty))
+        (SC3D:LBL-SET-MARK)
+      )
     )
   )
 )
@@ -6414,6 +6622,7 @@
   (foreach lbl (SC3D:LBL-ALL)
     (SC3D:LBL-WATCH-PAIR lbl)
   )
+  (SC3D:LBL-SET-MARK)
 )
 
 ;; ---------------------------------------------------------------- creation
@@ -6508,10 +6717,22 @@
   ins
 )
 
-(defun SC3D:LBL-RELINK (lbl cam cvname / size)
+(defun SC3D:LBL-RELINK (lbl cam cvname / ed blockName ss size)
   ;; Met un repere existant a jour : nom (bloc redefini en place : position,
   ;; rotation et calque de l'INSERT conserves), camera liee, puis trait.
-  (setq size (SC3D:LBL-DEFINE-BLOCK (cdr (assoc 2 (entget lbl))) cvname))
+  (setq ed (entget lbl))
+  (setq blockName (cdr (assoc 2 ed)))
+  ;; Bloc partage avec un autre repere (repere copie/colle) : celui-ci recoit
+  ;; son propre bloc, sinon renommer la copie renommerait aussi l'original.
+  (setq ss (ssget "_X" (list '(0 . "INSERT") (cons 2 blockName))))
+  (if (and ss (> (sslength ss) 1))
+    (progn
+      (setq blockName (SC3D:UNIQUE-BLOCK-NAME "SC3D_LABEL_"))
+      (setq size (SC3D:LBL-DEFINE-BLOCK blockName cvname))
+      (entmod (SC3D:DXF-PUT ed 2 blockName))
+    )
+    (setq size (SC3D:LBL-DEFINE-BLOCK blockName cvname))
+  )
   (SC3D:LBL-SET-XDATA lbl (SC3D:LBL-XDATA-LIST (cdr (assoc 5 (entget cam))) (car size) (cadr size)))
   (SC3D:LBL-UPDATE-LEADER lbl (SC3D:LBL-LEADER-OF lbl))
 )
