@@ -3180,11 +3180,18 @@
   (if (tblsearch "LAYER" name)
     (progn
       (setq ed (entget (tblobjname "LAYER" name)))
-      (if (assoc 62 ed)
-        (setq ed (subst (cons 62 color) (assoc 62 ed) ed))
-        (setq ed (append ed (list (cons 62 color))))
+      ;; entmod seulement si la couleur change : une modification de calque peut
+      ;; declencher une regeneration, et cette fonction est rappelee pour chaque
+      ;; camera (creation, export...).
+      (if (not (equal (cdr (assoc 62 ed)) color))
+        (progn
+          (if (assoc 62 ed)
+            (setq ed (subst (cons 62 color) (assoc 62 ed) ed))
+            (setq ed (append ed (list (cons 62 color))))
+          )
+          (entmod ed)
+        )
       )
-      (entmod ed)
     )
     (entmake
       (list
@@ -3206,7 +3213,9 @@
     (setq s "CAMERA")
   )
   (setq s (strcase s))
-  (setq bad '("<" ">" "/" "\\" "\"" ":" ";" "?" "*" "|" "," "=" "'" "(" ")" "[" "]" "{" "}" "." " "))
+  ;; "#" "@" "~" "`" : jokers de VPLAYER (cf. SC3D:VPLAYER-APPLY), un nom de
+  ;; calque qui en contient ne se designerait plus lui-meme.
+  (setq bad '("<" ">" "/" "\\" "\"" ":" ";" "?" "*" "|" "," "=" "'" "(" ")" "[" "]" "{" "}" "." " " "#" "@" "~" "`"))
   (foreach c bad
     (setq s (SC3D:REPL s c "_"))
   )
@@ -3239,6 +3248,16 @@
     *SC3D_ACTIVE_CAMERA_LAYER*
     "SC3D_CAMERA"
   )
+)
+
+(defun SC3D:USE-CAMERA-LAYER (vals / lay)
+  ;; Calque du symbole camera pour regenerer le bloc d'une camera existante
+  ;; (ajustement, visibilite) : celui de SON type, comme a sa creation, et non
+  ;; celui de la derniere camera creee dans la session. Calque cree s'il
+  ;; manque, sans toucher a la couleur d'un calque existant.
+  (setq lay (SC3D:CAMERA-LAYER-NAME vals))
+  (if (not (tblsearch "LAYER" lay)) (SC3D:LAYER lay 2))
+  (setq *SC3D_ACTIVE_CAMERA_LAYER* lay)
 )
 
 (defun SC3D:CV-LAYER-NAME (vals handle / cvname sit)
@@ -3600,6 +3619,409 @@
   out
 )
 
+;; ------------------------------------------------------------------------------------
+;; RECOLLAGE DES FRAGMENTS DE DECOUPE (une seule hachure par zone)
+;;
+;; SC3D:CLIP-FLAT-POLY renvoie un fragment par triangle du polygone d'ajustement :
+;; hachurer chaque fragment donnait plusieurs hachures pour une meme zone PPM (et
+;; autant d'aretes visibles en ombrage). Ici les fragments sont recolles : leurs
+;; aretes communes (diagonales de la triangulation, parcourues une fois dans
+;; chaque sens) s'annulent, les aretes restantes forment le contour exact de la
+;; zone decoupee, en une ou plusieurs boucles (si l'ajustement coupe la zone en
+;; morceaux disjoints), hachurees par une seule entite HATCH.
+;; ------------------------------------------------------------------------------------
+
+;; Tolerance de fusion des sommets (unites du dessin) : bien au-dessus des
+;; erreurs d'arrondi des intersections, bien en dessous de toute cote utile.
+(setq *SC3D_MERGE_TOL* 1e-6)
+;; Cache de SC3D:CLIP-POLY-SIMPLE-P (polygone teste et resultat).
+(setq *SC3D_SIMPLE_POLY* nil)
+(setq *SC3D_SIMPLE_VAL* nil)
+
+(defun SC3D:VTX-INDEX (pt verts tol / i found)
+  ;; Indice dans verts du sommet confondu avec pt (en X/Y, a tol pres), ou nil.
+  (setq i 0)
+  (while (and verts (null found))
+    (if (and (equal (car pt) (car (car verts)) tol)
+             (equal (cadr pt) (cadr (car verts)) tol))
+      (setq found i)
+      (progn
+        (setq i (+ i 1))
+        (setq verts (cdr verts))
+      )
+    )
+  )
+  found
+)
+
+(defun SC3D:REMOVE-ONE (item lst / out done)
+  ;; lst sans la premiere occurrence de item (vl-remove les enleverait toutes).
+  (setq out '())
+  (setq done nil)
+  (foreach x lst
+    (if (and (not done) (equal x item))
+      (setq done T)
+      (setq out (cons x out))
+    )
+  )
+  (reverse out)
+)
+
+(defun SC3D:REMOVE-NTH (idx lst / i out)
+  (setq i 0)
+  (setq out '())
+  (foreach x lst
+    (if (/= i idx) (setq out (cons x out)))
+    (setq i (+ i 1))
+  )
+  (reverse out)
+)
+
+(defun SC3D:PTS-AVG (pts / n)
+  ;; Moyenne X/Y d'une liste de points (point germe des hachures).
+  (setq n (float (length pts)))
+  (list
+    (/ (apply '+ (mapcar 'car pts)) n)
+    (/ (apply '+ (mapcar 'cadr pts)) n)
+  )
+)
+
+(defun SC3D:SPLIT-EDGE (i j verts tol / a b dx dy len2 len tmin k hits tt d prev out)
+  ;; Arete i->j (indices dans verts) decoupee aux sommets de verts situes dessus,
+  ;; a tol pres : un fragment voisin peut avoir un sommet au milieu d'une arete
+  ;; (jonction en T). Les aretes communes ont alors exactement les memes
+  ;; extremites des deux cotes et s'annulent. Renvoie (i . k1) (k1 . k2) ... (kn . j).
+  (setq a (nth i verts))
+  (setq b (nth j verts))
+  (setq dx (- (car b) (car a)))
+  (setq dy (- (cadr b) (cadr a)))
+  (setq len2 (+ (* dx dx) (* dy dy)))
+  (setq hits '())
+  (if (> len2 (* tol tol))
+    (progn
+      (setq len (sqrt len2))
+      (setq tmin (/ tol len))
+      (setq k 0)
+      (foreach p verts
+        (if (and (/= k i) (/= k j))
+          (progn
+            (setq tt (/ (+ (* (- (car p) (car a)) dx) (* (- (cadr p) (cadr a)) dy)) len2))
+            (if (and (> tt tmin) (< tt (- 1.0 tmin)))
+              (progn
+                ;; Distance de p a la droite (a b).
+                (setq d (/ (abs (- (* dx (- (cadr p) (cadr a))) (* dy (- (car p) (car a))))) len))
+                (if (< d tol)
+                  (setq hits (cons (cons tt k) hits))
+                )
+              )
+            )
+          )
+        )
+        (setq k (+ k 1))
+      )
+    )
+  )
+  ;; vl-sort-i plutot que vl-sort : ne supprime jamais d'element.
+  (setq prev i)
+  (setq out '())
+  (foreach k (vl-sort-i hits '(lambda (u v) (< (car u) (car v))))
+    (setq out (cons (cons prev (cdr (nth k hits))) out))
+    (setq prev (cdr (nth k hits)))
+  )
+  (reverse (cons (cons prev j) out))
+)
+
+(defun SC3D:CHAIN-EDGES (edges / ok loops e start cur nxt lp)
+  ;; Enchaine des aretes orientees (i . j) en boucles fermees (listes d'indices).
+  ;; Renvoie 'FAIL si une boucle ne se referme pas.
+  (setq ok T)
+  (setq loops '())
+  (while (and ok edges)
+    (setq e (car edges))
+    (setq edges (cdr edges))
+    (setq start (car e))
+    (setq cur (cdr e))
+    (setq lp (list start))
+    (while (and ok (/= cur start))
+      (setq lp (cons cur lp))
+      (setq nxt (assoc cur edges))
+      (if nxt
+        (progn
+          (setq edges (SC3D:REMOVE-ONE nxt edges))
+          (setq cur (cdr nxt))
+        )
+        (setq ok nil)
+      )
+    )
+    (if ok (setq loops (cons (reverse lp) loops)))
+  )
+  (if ok (reverse loops) 'FAIL)
+)
+
+(defun SC3D:MIDDLE-ALIGNED-P (a b c tol / dx dy len2 tt)
+  ;; T si b est sur le segment a-c (a tol pres), strictement entre a et c.
+  (setq dx (- (car c) (car a)))
+  (setq dy (- (cadr c) (cadr a)))
+  (setq len2 (+ (* dx dx) (* dy dy)))
+  (if (<= len2 (* tol tol))
+    nil
+    (progn
+      (setq tt (/ (+ (* (- (car b) (car a)) dx) (* (- (cadr b) (cadr a)) dy)) len2))
+      (and
+        (> tt 0.0)
+        (< tt 1.0)
+        (< (/ (abs (- (* dx (- (cadr b) (cadr a))) (* dy (- (car b) (car a))))) (sqrt len2)) tol)
+      )
+    )
+  )
+)
+
+(defun SC3D:LOOP-SIMPLIFY (pts tol / changed n i a b c)
+  ;; Supprime les sommets alignes au milieu d'un cote droit (laisses le long des
+  ;; bords de la zone par les triangles de l'ajustement) : contour minimal.
+  (setq changed T)
+  (while (and changed (> (length pts) 3))
+    (setq changed nil)
+    (setq n (length pts))
+    (setq i 0)
+    (while (and (not changed) (< i n))
+      (setq a (nth (rem (+ i n -1) n) pts))
+      (setq b (nth i pts))
+      (setq c (nth (rem (+ i 1) n) pts))
+      (if (SC3D:MIDDLE-ALIGNED-P a b c tol)
+        (progn
+          (setq pts (SC3D:REMOVE-NTH i pts))
+          (setq changed T)
+        )
+        (setq i (+ i 1))
+      )
+    )
+  )
+  pts
+)
+
+(defun SC3D:FRAG-IDS (frag verts tol / ids id p)
+  ;; Indices (dans verts) des sommets du fragment, doublons consecutifs (et
+  ;; fermeture repetee) retires. verts est complete au besoin : renvoie
+  ;; (ids . verts).
+  (setq ids '())
+  (foreach p frag
+    (setq id (SC3D:VTX-INDEX p verts tol))
+    (if (null id)
+      (progn
+        (setq id (length verts))
+        (setq verts (append verts (list (list (car p) (cadr p)))))
+      )
+    )
+    (if (or (null ids) (/= id (car ids)))
+      (setq ids (cons id ids))
+    )
+  )
+  (setq ids (reverse ids))
+  (if (and (> (length ids) 1) (= (car ids) (last ids)))
+    (setq ids (reverse (cdr (reverse ids))))
+  )
+  (cons ids verts)
+)
+
+(defun SC3D:FRAGS->LOOPS (frags / tol verts edges r ids area n i split kept e rest dup loops out lp pts)
+  ;; Contour de l'union des fragments convexes frags (sortie de
+  ;; SC3D:CLIP-FLAT-POLY) : liste de boucles (listes de points X/Y), nil si
+  ;; l'union est vide (fragments degeneres), 'FAIL si le recollage est
+  ;; impossible (fragments qui se chevauchent : ajustement auto-intersectant).
+  (setq tol *SC3D_MERGE_TOL*)
+  (setq verts '())
+  (setq edges '())
+
+  ;; 1. Aretes orientees de chaque fragment non degenere, tous dans le sens
+  ;;    trigonometrique : une arete commune a deux fragments voisins y apparait
+  ;;    alors une fois dans chaque sens.
+  (foreach frag frags
+    (setq r (SC3D:FRAG-IDS frag verts tol))
+    (setq ids (car r))
+    (setq verts (cdr r))
+    (if (>= (length ids) 3)
+      (progn
+        (setq area (SC3D:POLY-SIGNED-AREA2 (mapcar '(lambda (k) (nth k verts)) ids)))
+        (if (> (abs area) (* tol tol))
+          (progn
+            (if (< area 0.0) (setq ids (reverse ids)))
+            (setq n (length ids))
+            (setq i 0)
+            (while (< i n)
+              (setq edges (cons (cons (nth i ids) (nth (rem (+ i 1) n) ids)) edges))
+              (setq i (+ i 1))
+            )
+          )
+        )
+      )
+    )
+  )
+
+  ;; 2. Jonctions en T, puis annulation des aretes communes.
+  (setq split '())
+  (foreach e edges
+    (setq split (append (SC3D:SPLIT-EDGE (car e) (cdr e) verts tol) split))
+  )
+  (setq kept '())
+  (foreach e split
+    (if (member (cons (cdr e) (car e)) kept)
+      (setq kept (SC3D:REMOVE-ONE (cons (cdr e) (car e)) kept))
+      (setq kept (cons e kept))
+    )
+  )
+
+  ;; 3. Une arete restee en double dans le meme sens = fragments superposes.
+  (setq dup nil)
+  (setq rest kept)
+  (while (and rest (not dup))
+    (if (member (car rest) (cdr rest)) (setq dup T))
+    (setq rest (cdr rest))
+  )
+
+  (setq loops (if dup 'FAIL (SC3D:CHAIN-EDGES (reverse kept))))
+  (if (eq loops 'FAIL)
+    'FAIL
+    (progn
+      ;; 4. Boucles en points (une boucle qui repasse par un meme sommet - deux
+      ;;    morceaux qui se touchent en un point - est separee en boucles
+      ;;    simples), sommets alignes retires, boucles degenerees ignorees.
+      (setq out '())
+      (foreach lp loops
+        (foreach sub (SC3D:SPLIT-PINCH lp)
+          (setq pts (SC3D:LOOP-SIMPLIFY (mapcar '(lambda (k) (nth k verts)) sub) tol))
+          (if (and (>= (length pts) 3) (> (abs (SC3D:POLY-SIGNED-AREA2 pts)) (* tol tol)))
+            (setq out (cons pts out))
+          )
+        )
+      )
+      (reverse out)
+    )
+  )
+)
+
+(defun SC3D:SPLIT-PINCH (lp / stack out sub)
+  ;; Boucle d'indices lp decoupee en boucles simples a chaque sommet repete
+  ;; (meme ordre de parcours).
+  (setq stack '())
+  (setq out '())
+  (foreach k lp
+    (if (member k stack)
+      (progn
+        (setq sub '())
+        (while (/= (car stack) k)
+          (setq sub (cons (car stack) sub))
+          (setq stack (cdr stack))
+        )
+        (setq out (cons (cons k sub) out))
+      )
+      (setq stack (cons k stack))
+    )
+  )
+  (cons (reverse stack) out)
+)
+
+(defun SC3D:SEG-CROSS-P (p1 p2 p3 p4)
+  ;; T si les segments p1-p2 et p3-p4 se coupent franchement (en X/Y).
+  (and
+    (not (eq (> (SC3D:CROSS2 p3 p4 p1) 0.0) (> (SC3D:CROSS2 p3 p4 p2) 0.0)))
+    (not (eq (> (SC3D:CROSS2 p1 p2 p3) 0.0) (> (SC3D:CROSS2 p1 p2 p4) 0.0)))
+  )
+)
+
+(defun SC3D:POLY-SIMPLE-P (poly / n i j ok)
+  ;; nil si deux cotes non voisins du polygone se coupent (auto-intersectant).
+  (setq n (length poly))
+  (setq ok T)
+  (setq i 0)
+  (while (and ok (< i n))
+    (setq j (+ i 2))
+    (while (and ok (< j n))
+      (if (and
+            (not (and (= i 0) (= j (- n 1))))
+            (SC3D:SEG-CROSS-P
+              (nth i poly) (nth (rem (+ i 1) n) poly)
+              (nth j poly) (nth (rem (+ j 1) n) poly)
+            )
+          )
+        (setq ok nil)
+      )
+      (setq j (+ j 1))
+    )
+    (setq i (+ i 1))
+  )
+  ok
+)
+
+(defun SC3D:CLIP-DEDUPE (pts / tol out)
+  ;; Polygone d'ajustement sans sommets consecutifs confondus (double-clic,
+  ;; fermeture en recliquant le premier point...) : sinon la triangulation peut
+  ;; produire des triangles qui se chevauchent.
+  (setq tol *SC3D_MERGE_TOL*)
+  (setq out '())
+  (foreach p pts
+    (if (or (null out)
+            (not (and (equal (car p) (car (car out)) tol)
+                      (equal (cadr p) (cadr (car out)) tol))))
+      (setq out (cons p out))
+    )
+  )
+  (setq out (reverse out))
+  (while (and (> (length out) 1)
+              (equal (car (car out)) (car (last out)) tol)
+              (equal (cadr (car out)) (cadr (last out)) tol))
+    (setq out (reverse (cdr (reverse out))))
+  )
+  out
+)
+
+(defun SC3D:CLIP-POLY-SIMPLE-P ()
+  ;; SC3D:POLY-SIMPLE-P du polygone d'ajustement courant, calcule une seule fois
+  ;; par polygone (meme liste = meme objet, d'ou eq).
+  (if (not (eq *SC3D_SIMPLE_POLY* *SC3D_CLIP_POLY*))
+    (progn
+      (setq *SC3D_SIMPLE_POLY* *SC3D_CLIP_POLY*)
+      (setq *SC3D_SIMPLE_VAL* (SC3D:POLY-SIMPLE-P *SC3D_CLIP_POLY*))
+    )
+  )
+  *SC3D_SIMPLE_VAL*
+)
+
+(defun SC3D:CLIP-FLAT-HATCHES (subjPts / frags loops out r pts)
+  ;; Decoupe de la zone plane subjPts par l'ajustement courant, prete a hachurer :
+  ;; liste de groupes de boucles (points X/Y), UN groupe = UNE entite HATCH.
+  ;; Cas normal : un seul groupe, le contour exact de la zone decoupee (une ou
+  ;; plusieurs boucles), soit une seule hachure par zone au lieu d'une par
+  ;; triangle de l'ajustement. nil si la zone est entierement hors de
+  ;; l'ajustement.
+  ;; Ajustement auto-intersectant (fragments qui se chevauchent) : une hachure
+  ;; par fragment, comme avant - reunis dans une seule hachure, leurs zones de
+  ;; recouvrement resteraient vides (remplissage pair/impair).
+  (setq frags (SC3D:CLIP-FLAT-POLY subjPts))
+  (setq loops
+    (cond
+      ((null frags) nil)
+      ((not (SC3D:CLIP-POLY-SIMPLE-P)) 'FAIL)
+      (T (SC3D:FRAGS->LOOPS frags))
+    )
+  )
+  (if (eq loops 'FAIL)
+    (progn
+      (setq out '())
+      (foreach frag frags
+        (setq r (SC3D:FRAG-IDS frag '() *SC3D_MERGE_TOL*))
+        (setq pts (mapcar '(lambda (k) (nth k (cdr r))) (car r)))
+        (if (and (>= (length pts) 3)
+                 (> (abs (SC3D:POLY-SIGNED-AREA2 pts)) (* *SC3D_MERGE_TOL* *SC3D_MERGE_TOL*)))
+          (setq out (cons (list pts) out))
+        )
+      )
+      (reverse out)
+    )
+    (if loops (list loops) nil)
+  )
+)
+
 (defun SC3D:FAN-TRIANGLES (poly / n i out)
   (setq n (length poly))
   (setq out '())
@@ -3702,13 +4124,34 @@
   )
 )
 
-(defun SC3D:ZONE-HATCH-RAW (pts lay aci rgb trans / npts z midX midY)
-  ;; Hachure pleine (motif SOLID) sur un contour plan quelconque (3 sommets ou
-  ;; plus) : remplace un SOLID par une vraie entite HATCH.
-  (setq npts (length pts))
-  (setq z (if (caddr (car pts)) (caddr (car pts)) 0.0))
-  (setq midX (/ (apply '+ (mapcar 'car pts)) (float npts)))
-  (setq midY (/ (apply '+ (mapcar 'cadr pts)) (float npts)))
+(defun SC3D:HATCH-LOOPS-DXF (loops / out lp)
+  ;; Contours d'une entite HATCH : une boucle polyligne fermee par element de
+  ;; loops (listes de points, seuls X/Y sont utilises).
+  (setq out (list (cons 91 (length loops))))
+  (foreach lp loops
+    (setq out
+      (append
+        out
+        (list
+          ;; 3 = polyligne (2) + contour exterieur (1) : chaque boucle est
+          ;; remplie, quel que soit le style d'ilots choisi ensuite.
+          '(92 . 3)
+          '(72 . 0)
+          '(73 . 1)
+          (cons 93 (length lp))
+        )
+        (mapcar '(lambda (pt) (cons 10 (list (car pt) (cadr pt)))) lp)
+        (list '(97 . 0))
+      )
+    )
+  )
+  out
+)
+
+(defun SC3D:ZONE-HATCH-LOOPS (loops z lay aci rgb trans)
+  ;; Hachure pleine (motif SOLID) a l'altitude z sur un ou plusieurs contours
+  ;; plans (3 sommets ou plus chacun) : une seule entite HATCH, quel que soit le
+  ;; nombre de boucles.
   (entmake
     (append
       (list
@@ -3724,29 +4167,38 @@
         '(2 . "SOLID")
         '(70 . 1)
         '(71 . 0)
-        '(91 . 1)
-        '(92 . 2)
-        '(72 . 0)
-        '(73 . 1)
-        (cons 93 npts)
       )
-      (mapcar '(lambda (pt) (cons 10 (list (car pt) (cadr pt)))) pts)
+      (SC3D:HATCH-LOOPS-DXF loops)
       (list
         '(75 . 0)
         '(76 . 1)
         '(98 . 1)
-        (cons 10 (list midX midY))
+        (cons 10 (SC3D:PTS-AVG (car loops)))
       )
     )
   )
 )
 
-(defun SC3D:ZONE-HATCH (p1 p2 p3 p4 lay aci rgb trans / frags frag)
+(defun SC3D:ZONE-HATCH-RAW (pts lay aci rgb trans)
+  ;; Hachure pleine (motif SOLID) sur un contour plan quelconque (3 sommets ou
+  ;; plus) : remplace un SOLID par une vraie entite HATCH.
+  (SC3D:ZONE-HATCH-LOOPS
+    (list pts)
+    (if (caddr (car pts)) (caddr (car pts)) 0.0)
+    lay aci rgb trans
+  )
+)
+
+(defun SC3D:ZONE-HATCH (p1 p2 p3 p4 lay aci rgb trans / grp)
+  ;; Avec un ajustement actif : UNE seule hachure pour la zone, sur son contour
+  ;; decoupe (cf. SC3D:CLIP-FLAT-HATCHES), au lieu d'une hachure par triangle
+  ;; de l'ajustement.
   (if *SC3D_CLIP_POLY*
-    (progn
-      (setq frags (SC3D:CLIP-FLAT-POLY (list p1 p2 p3 p4)))
-      (foreach frag frags
-        (SC3D:ZONE-HATCH-RAW frag lay aci rgb trans)
+    (foreach grp (SC3D:CLIP-FLAT-HATCHES (list p1 p2 p3 p4))
+      (SC3D:ZONE-HATCH-LOOPS
+        grp
+        (if (caddr p1) (caddr p1) 0.0)
+        lay aci rgb trans
       )
     )
     (SC3D:ZONE-HATCH-RAW (list p1 p2 p3 p4) lay aci rgb trans)
@@ -4221,10 +4673,8 @@
   )
 )
 
-(defun SC3D:EMIT-HATCH (pts patName aci / npts midX)
-  (setq npts (length pts))
-  (setq midX (/ (apply '+ (mapcar 'car pts)) (float npts)))
-
+(defun SC3D:EMIT-HATCH-LOOPS (loops patName aci)
+  ;; Hachure a motif sur un ou plusieurs contours : une seule entite HATCH.
   (entmake
     (append
       (list
@@ -4238,13 +4688,8 @@
         (cons 2 patName)
         '(70 . 0)
         '(71 . 0)
-        '(91 . 1)
-        '(92 . 2)
-        '(72 . 0)
-        '(73 . 1)
-        (cons 93 npts)
       )
-      (mapcar '(lambda (pt) (cons 10 (list (car pt) (cadr pt)))) pts)
+      (SC3D:HATCH-LOOPS-DXF loops)
       (list
         '(75 . 0)
         '(76 . 1)
@@ -4252,13 +4697,17 @@
         '(41 . 0.20)
         '(47 . 1.0)
         '(98 . 1)
-        (cons 10 (list midX 0.0))
+        (cons 10 (SC3D:PTS-AVG (car loops)))
       )
     )
   )
 )
 
-(defun SC3D:DRAW-HATCH-FOV (maxD nearD tanH tilt camH objH patName aci / wMax w1 pts frags frag)
+(defun SC3D:EMIT-HATCH (pts patName aci)
+  (SC3D:EMIT-HATCH-LOOPS (list pts) patName aci)
+)
+
+(defun SC3D:DRAW-HATCH-FOV (maxD nearD tanH tilt camH objH patName aci / wMax w1 pts grp)
   (setq wMax (SC3D:HALF-WIDTH-JVSG maxD tanH tilt camH objH))
 
   (if (<= nearD 0.0)
@@ -4283,11 +4732,9 @@
   )
 
   (if *SC3D_CLIP_POLY*
-    (progn
-      (setq frags (SC3D:CLIP-FLAT-POLY pts))
-      (foreach frag frags
-        (SC3D:EMIT-HATCH frag patName aci)
-      )
+    ;; Une seule hachure sur le contour decoupe (cf. SC3D:CLIP-FLAT-HATCHES).
+    (foreach grp (SC3D:CLIP-FLAT-HATCHES pts)
+      (SC3D:EMIT-HATCH-LOOPS grp patName aci)
     )
     (SC3D:EMIT-HATCH pts patName aci)
   )
@@ -5731,8 +6178,9 @@
     (progn
       (setq calc (SC3D:CALC vals))
       (setq view (cdr (assoc 'view vals)))
+      (SC3D:USE-CAMERA-LAYER vals)
 
-      (setq *SC3D_CLIP_POLY* (if active localPts nil))
+      (setq *SC3D_CLIP_POLY* (if active (SC3D:CLIP-DEDUPE localPts) nil))
       (setq *SC3D_CLIP_TRIS*
         (if *SC3D_CLIP_POLY* (SC3D:EAR-CLIP-TRIANGULATE *SC3D_CLIP_POLY*) nil)
       )
@@ -5774,12 +6222,13 @@
     (progn
       (setq calc (SC3D:CALC vals))
       (setq view (cdr (assoc 'view vals)))
+      (SC3D:USE-CAMERA-LAYER vals)
 
       (setq clip (SC3D:GET-CLIP-XDATA e))
       (setq active (and clip (car clip)))
       (setq pts (if clip (cdr clip) nil))
 
-      (setq *SC3D_CLIP_POLY* (if active pts nil))
+      (setq *SC3D_CLIP_POLY* (if active (SC3D:CLIP-DEDUPE pts) nil))
       (setq *SC3D_CLIP_TRIS*
         (if *SC3D_CLIP_POLY* (SC3D:EAR-CLIP-TRIANGULATE *SC3D_CLIP_POLY*) nil)
       )
@@ -7157,6 +7606,8 @@
 ;; "Existante" et l'autre "Projetee", une seule presentation combinee est creee.
 ;;
 ;; La fenetre creee par defaut avec toute nouvelle presentation est supprimee.
+;; Les fenetres d'export sont en style visuel "2D filaire" (bien plus rapide que
+;; l'ombrage, sans les aretes des hachures).
 ;;
 ;; NOTE : pour permettre le gel individuel, chaque bloc camera est deplace sur son
 ;; propre calque SC3D_CV_<handle> (couleur 2) au moment de l'export. Le gel est
@@ -7336,7 +7787,7 @@
           ;; SC3D:CLIP-FLAT-POLY travaille sur la triangulation courante : on la
           ;; substitue le temps du calcul, sans perturber un dessin en cours.
           (setq oldTris *SC3D_CLIP_TRIS*)
-          (setq *SC3D_CLIP_TRIS* (SC3D:EAR-CLIP-TRIANGULATE (cdr clip)))
+          (setq *SC3D_CLIP_TRIS* (SC3D:EAR-CLIP-TRIANGULATE (SC3D:CLIP-DEDUPE (cdr clip))))
           (setq frags (SC3D:CLIP-FLAT-POLY poly))
           (setq *SC3D_CLIP_TRIS* oldTris)
           (setq all '())
@@ -7381,7 +7832,96 @@
   (member (strcase name) (mapcar 'strcase (layoutlist)))
 )
 
-(defun SC3D:DELETE-EXPORT-LAYOUTS (/ doc names nm layObj ent r count)
+(defun SC3D:SETVAR-SAFE (name val / old)
+  ;; setvar protege : renvoie (name . ancienne valeur) pour la restauration, ou
+  ;; nil si la variable n'existe pas (ou est refusee) dans cette version.
+  (setq old (vl-catch-all-apply 'getvar (list name)))
+  (if (and old
+           (not (vl-catch-all-error-p old))
+           (not (vl-catch-all-error-p (vl-catch-all-apply 'setvar (list name val)))))
+    (cons name old)
+    nil
+  )
+)
+
+(defun SC3D:EXPORT-BEGIN ()
+  ;; Etat du dessin pendant l'export, restaure par SC3D:EXPORT-END (y compris
+  ;; sur Echap ou erreur, cf. *error* de SC3D:CMD-EXPORT) :
+  ;;  - reacteurs des reperes nom suspendus (meme verrou que
+  ;;    SC3D:LBL-LOCKED-CALL) : sinon chaque commande de l'export (MSPACE, ZOOM,
+  ;;    VPLAYER...) et chaque changement de calque de camera relancaient une
+  ;;    passe complete sur tous les reperes du dessin. L'export ne deplace
+  ;;    aucune camera ni aucun repere : il n'y a rien a mettre a jour ;
+  ;;  - pas d'echo des commandes ;
+  ;;  - pas de fenetre par defaut a la creation d'une presentation
+  ;;    (CREATEVIEWPORTS sous BricsCAD, LAYOUTCREATEVIEWPORT sous AutoCAD ; seule
+  ;;    celle que la version connait est modifiee) : elle affichait et
+  ;;    regenerait tout le modele, toutes cameras visibles, avant d'etre
+  ;;    aussitot supprimee ;
+  ;;  - REGENMODE memorise : SC3D:DELETE-EXPORT-LAYOUTS le coupe le temps des
+  ;;    suppressions.
+  (setq *SC3D_LBL_BUSY* T)
+  (setq *SC3D_EXPORT_SAVED*
+    (vl-remove nil
+      (list
+        (SC3D:SETVAR-SAFE "CMDECHO" 0)
+        (SC3D:SETVAR-SAFE "CREATEVIEWPORTS" 0)
+        (SC3D:SETVAR-SAFE "LAYOUTCREATEVIEWPORT" 0)
+        (SC3D:SETVAR-SAFE "REGENMODE" (getvar "REGENMODE"))
+      )
+    )
+  )
+)
+
+(defun SC3D:VIEWPORT-HANDLES (/ ss i out)
+  ;; Handles de toutes les fenetres (VIEWPORT) du dessin.
+  (setq out '())
+  (if (setq ss (ssget "_X" '((0 . "VIEWPORT"))))
+    (progn
+      (setq i 0)
+      (while (< i (sslength ss))
+        (setq out (cons (cdr (assoc 5 (entget (ssname ss i)))) out))
+        (setq i (+ i 1))
+      )
+    )
+  )
+  out
+)
+
+(defun SC3D:EXPORT-END (/ before e ed)
+  ;; Remettre CREATEVIEWPORTS a 1 peut creer une fenetre dans chaque
+  ;; presentation qui n'en a pas (constate sous BricsCAD V22) : les fenetres
+  ;; apparues pendant la restauration sont supprimees aussitot.
+  (if (assoc "CREATEVIEWPORTS" *SC3D_EXPORT_SAVED*)
+    (setq before (SC3D:VIEWPORT-HANDLES))
+  )
+  (foreach s *SC3D_EXPORT_SAVED*
+    (vl-catch-all-apply 'setvar (list (car s) (cdr s)))
+  )
+  (if (assoc "CREATEVIEWPORTS" *SC3D_EXPORT_SAVED*)
+    (foreach h (SC3D:VIEWPORT-HANDLES)
+      (if (and (not (member h before))
+               (setq e (handent h))
+               (setq ed (entget e))
+               (/= (cdr (assoc 69 ed)) 1))
+        (entdel e)
+      )
+    )
+  )
+  (setq *SC3D_EXPORT_SAVED* nil)
+  (setq *SC3D_LBL_BUSY* nil)
+  ;; Entites creees par l'export (espace papier) : jamais prises pour des copies
+  ;; par le reacteur de commande.
+  (SC3D:LBL-SET-MARK)
+)
+
+(defun SC3D:PS-OWNER-P (lay)
+  ;; T si la presentation lay possede le bloc *Paper_Space (presentation active
+  ;; en dernier).
+  (= (strcase (vla-get-Name (vla-get-Block lay))) "*PAPER_SPACE")
+)
+
+(defun SC3D:DELETE-EXPORT-LAYOUTS (/ doc targets r count regen)
   ;; Supprime toutes les presentations generees par un export precedent
   ;; (reperees par le xdata pose sur chacune a sa creation, cf.
   ;; SC3D:EXPORT-MAKE-LAYOUT) : les presentations propres a l'utilisateur, non
@@ -7389,28 +7929,41 @@
   ;; NB : LAYOUT n'est pas une table classique (LAYER, STYLE, BLOCK...), donc
   ;; pas de tblobjname possible : on passe par la collection Layouts (VLA) pour
   ;; recuperer l'ename de chaque presentation.
+  ;; Rapidite :
+  ;;  - un seul parcours de la collection (vlax-for) pour reperer les
+  ;;    presentations a supprimer, au lieu d'une recherche par nom pour chacune ;
+  ;;  - regenerations automatiques coupees (REGENMODE 0) pendant les
+  ;;    suppressions ;
+  ;;  - la presentation proprietaire de *Paper_Space (la derniere activee) est
+  ;;    supprimee en dernier : sinon *Paper_Space passerait d'une presentation
+  ;;    a supprimer a l'autre a chaque suppression ;
+  ;;  - reacteurs des reperes nom suspendus (cf. SC3D:EXPORT-BEGIN).
   (setq doc (SC3D:ACAD-DOC))
   (if (/= (getvar "CTAB") "Model") (setvar "CTAB" "Model"))
   (setq count 0)
-  (setq names (layoutlist))
-  (foreach nm names
-    (if (/= (strcase nm) "MODEL")
-      (progn
-        (setq layObj (vl-catch-all-apply 'vla-Item (list (vla-get-Layouts doc) nm)))
-        (if (not (vl-catch-all-error-p layObj))
-          (progn
-            (setq ent (vlax-vla-object->ename layObj))
-            (if (and ent (SC3D:GET-XDATA ent))
-              (progn
-                (setq r (vl-catch-all-apply 'vla-Delete (list layObj)))
-                (if (not (vl-catch-all-error-p r))
-                  (setq count (+ count 1))
-                )
-              )
-            )
-          )
+  (setq targets '())
+  (vlax-for lay (vla-get-Layouts doc)
+    (if (and (/= (strcase (vla-get-Name lay)) "MODEL")
+             (SC3D:GET-XDATA (vlax-vla-object->ename lay)))
+      (setq targets (cons lay targets))
+    )
+  )
+  (setq targets
+    (append
+      (vl-remove-if 'SC3D:PS-OWNER-P targets)
+      (vl-remove-if-not 'SC3D:PS-OWNER-P targets)
+    )
+  )
+  (if targets
+    (progn
+      (setq regen (SC3D:SETVAR-SAFE "REGENMODE" 0))
+      (foreach lay targets
+        (setq r (vl-catch-all-apply 'vla-Delete (list lay)))
+        (if (not (vl-catch-all-error-p r))
+          (setq count (+ count 1))
         )
       )
+      (if regen (vl-catch-all-apply 'setvar (list "REGENMODE" (cdr regen))))
     )
   )
   count
@@ -7469,80 +8022,173 @@
   )
 )
 
-(defun SC3D:VP-FREEZE-CAMS (vpEnt showLay / echo layStr)
-  ;; Gel de calques propre a une fenetre via VPLAYER (fiable sous BricsCAD,
-  ;; contrairement a la modification directe des entrees 331 du VIEWPORT) :
-  ;; tous les calques camera de *SC3D_ALL_CV_LAYERS* (calcules par
-  ;; SC3D:CMD-EXPORT, un par champ de vision - plus un joker "SC3D_CV_*" pour
-  ;; les cameras sans nom) sont geles dans cette fenetre, puis seul le calque
-  ;; showLay (la camera a presenter) est degele.
-  ;; showLay = nil : tout reste gele (fenetre de legende).
-  ;; Le calque SC3D_TEXTES (recap, cotes, nom du champ de vision) est lui aussi
-  ;; gele dans toutes les fenetres d'export : son contenu est deja repris dans
-  ;; les titres/legendes places en espace papier (cf. SC3D:EXPORT-MAKE-LAYOUT),
-  ;; l'afficher aussi dans le modele ne ferait que le dupliquer/le superposer.
-  (setq echo (getvar "CMDECHO"))
-  (setvar "CMDECHO" 0)
-  (setq layStr
-    (if (and (boundp '*SC3D_ALL_CV_LAYERS*) *SC3D_ALL_CV_LAYERS*)
-      (SC3D:JOIN *SC3D_ALL_CV_LAYERS* ",")
-      "SC3D_CV_*"
+(defun SC3D:VP-HIDE-LIST (v / own)
+  ;; Calques a geler dans la fenetre v : tous les calques camera de
+  ;; *SC3D_ALL_CV_LAYERS* (calcules par SC3D:CMD-EXPORT, un par champ de vision
+  ;; - joker "SC3D_CV_*" a defaut) sauf celui de la camera presentee (nth 4 v,
+  ;; nil pour la legende), plus SC3D_TEXTES s'il existe : son contenu (recap,
+  ;; cotes, nom du champ de vision) est deja repris dans les titres/legendes
+  ;; places en espace papier (cf. SC3D:EXPORT-MAKE-LAYOUT), l'afficher aussi
+  ;; dans le modele ne ferait que le dupliquer/le superposer.
+  (setq own (if (nth 4 v) (strcase (nth 4 v)) nil))
+  (append
+    (vl-remove-if
+      '(lambda (l) (= (strcase l) own))
+      (if (and (boundp '*SC3D_ALL_CV_LAYERS*) *SC3D_ALL_CV_LAYERS*)
+        *SC3D_ALL_CV_LAYERS*
+        '("SC3D_CV_*")
+      )
     )
+    (if (tblsearch "LAYER" "SC3D_TEXTES") '("SC3D_TEXTES") nil)
   )
-  (command "_.VPLAYER" "_Freeze" layStr "_Select" vpEnt "" "")
-  (if showLay
-    (command "_.VPLAYER" "_Thaw" showLay "_Select" vpEnt "" "")
-  )
-  (command "_.VPLAYER" "_Freeze" "SC3D_TEXTES" "_Select" vpEnt "" "")
-  (setvar "CMDECHO" echo)
 )
 
-(defun SC3D:VP-ZOOM (vpEnt bmin bmax mrg / id echo dx dy p1 p2)
-  ;; Cadre la fenetre sur l'emprise modele bmin/bmax (mrg = marge par cote, en
-  ;; fraction de l'emprise ; 0.0 = zoom exactement entre les deux extremites).
-  ;; La fenetre est activee (MSPACE + CVPORT) puis un ZOOM Fenetre est applique -
-  ;; methode fiable sous BricsCAD, contrairement au reglage Target/CustomScale par
-  ;; l'API - avant de revenir en espace papier.
-  (setq id (cdr (assoc 69 (entget vpEnt))))
+(defun SC3D:JOIN-CHUNKS (lst sep maxLen / out cur)
+  ;; Comme SC3D:JOIN, mais en plusieurs chaines d'au plus maxLen caracteres
+  ;; (sauf element plus long a lui seul).
+  (setq out '())
+  (setq cur nil)
+  (foreach x lst
+    (if (and cur (> (+ (strlen cur) (strlen sep) (strlen x)) maxLen))
+      (progn
+        (setq out (cons cur out))
+        (setq cur nil)
+      )
+    )
+    (setq cur (if cur (strcat cur sep x) x))
+  )
+  (if cur (setq out (cons cur out)))
+  (reverse out)
+)
+
+(defun SC3D:VPLAYER-APPLY (vps / v)
+  ;; Gel de calques propre a chaque fenetre via VPLAYER (fiable sous BricsCAD,
+  ;; contrairement a la modification directe des entrees 331 du VIEWPORT) :
+  ;; dans chaque fenetre, gel de SC3D:VP-HIDE-LIST (la camera presentee n'est
+  ;; jamais gelee), puis degel explicite de la camera presentee (au cas ou son
+  ;; calque serait "gele dans les nouvelles fenetres").
+  ;; Une seule commande VPLAYER pour toutes les fenetres de la presentation (au
+  ;; lieu de trois par fenetre), toujours refermee avant de continuer.
+  (command "_.VPLAYER")
+  (foreach v vps
+    ;; Liste envoyee par morceaux courts : avec beaucoup de cameras, une seule
+    ;; chaine pourrait depasser la longueur acceptee par l'invite.
+    (foreach s (SC3D:JOIN-CHUNKS (SC3D:VP-HIDE-LIST v) "," 250)
+      (command "_Freeze" s "_Select" (car v) "")
+    )
+    (if (nth 4 v)
+      (command "_Thaw" (nth 4 v) "_Select" (car v) "")
+    )
+  )
+  (command "")
+  (if (> (logand (getvar "CMDACTIVE") 1) 0) (command))
+)
+
+(defun SC3D:VP-LAYER-FROZEN-P (vpEnt lay / le)
+  ;; T si le calque lay est gele dans la fenetre vpEnt (code 331 du VIEWPORT).
+  (if (setq le (tblobjname "LAYER" lay))
+    (if (member (cons 331 le) (entget vpEnt)) T nil)
+    nil
+  )
+)
+
+(defun SC3D:VP-LAYERS-OK-P (v / probe)
+  ;; Le gel de la fenetre v a-t-il pris ? Un calque a cacher est bien gele et
+  ;; celui de la camera presentee ne l'est pas. nil aussi si la version
+  ;; n'expose pas les calques geles en 331 : le gel est alors simplement refait.
+  (setq probe (car (SC3D:VP-HIDE-LIST v)))
+  (and
+    (or (null probe) (wcmatch probe "*`**") (SC3D:VP-LAYER-FROZEN-P (car v) probe))
+    (or (null (nth 4 v)) (not (SC3D:VP-LAYER-FROZEN-P (car v) (nth 4 v))))
+  )
+)
+
+(defun SC3D:VP-ZOOM-CURRENT (bmin bmax mrg / dx dy p1 p2)
+  ;; Cadre la fenetre courante (deja activee : MSPACE + CVPORT) sur l'emprise
+  ;; modele bmin/bmax (mrg = marge par cote, en fraction de l'emprise ; 0.0 =
+  ;; zoom exactement entre les deux extremites). ZOOM Fenetre : methode fiable
+  ;; sous BricsCAD, contrairement au reglage Target/CustomScale par l'API.
   (setq dx (* mrg (SC3D:MAX 0.001 (- (car bmax) (car bmin)))))
   (setq dy (* mrg (SC3D:MAX 0.001 (- (cadr bmax) (cadr bmin)))))
   (setq p1 (list (- (car bmin) dx) (- (cadr bmin) dy) 0.0))
   (setq p2 (list (+ (car bmax) dx) (+ (cadr bmax) dy) 0.0))
-  (setq echo (getvar "CMDECHO"))
-  (setvar "CMDECHO" 0)
-  (command "_.MSPACE")
-  (setvar "CVPORT" id)
   ;; Les emprises sont en WCS : conversion vers l'UCS courant pour ZOOM.
   (command "_.ZOOM" "_W" (trans p1 0 1) (trans p2 0 1))
-  (command "_.PSPACE")
-  (setvar "CMDECHO" echo)
 )
 
-(defun SC3D:VP-SET-SHADE-OMBRE (vpEnt / id echo)
-  ;; Style visuel "Ombre" dans la fenetre : MSPACE + CVPORT (comme SC3D:VP-ZOOM)
-  ;; puis VSCURRENT "_Shaded" (mot-cle integre, locale-independant).
-  (setq id (cdr (assoc 69 (entget vpEnt))))
-  (setq echo (getvar "CMDECHO"))
-  (setvar "CMDECHO" 0)
-  (command "_.MSPACE")
-  (setvar "CVPORT" id)
-  (command "_.VSCURRENT" "_Shaded")
-  (command "_.PSPACE")
-  (setvar "CMDECHO" echo)
+(defun SC3D:VP-WIREFRAME ()
+  ;; Style visuel "2D filaire" dans la fenetre courante (deja activee) : bien
+  ;; plus leger que l'ombrage (ni rendu 3D a chaque regeneration, ni aretes des
+  ;; hachures affichees). Mot-cle integre "_2dwireframe" (locale-independant) ;
+  ;; s'il n'etait pas reconnu, la commande est annulee plutot que de rester en
+  ;; attente et d'avaler les commandes suivantes.
+  (command "_.VSCURRENT" "_2dwireframe")
+  (if (> (logand (getvar "CMDACTIVE") 1) 0) (command))
 )
 
-(defun SC3D:ADD-VIEWPORT (layout cx cy w h bmin bmax mrg showLay shaded / pspc vp en)
-  ;; Cree une fenetre (PViewport) centree en (cx cy) sur le papier, de taille w x h,
-  ;; cadree sur l'emprise modele bmin/bmax (mrg = marge de zoom par cote).
-  ;; Toutes les cameras y sont gelees sauf showLay. shaded = T : style visuel "Ombre".
+(defun SC3D:WIREFRAME-VS (/ d)
+  ;; Objet style visuel "2dWireframe" du dessin (ename), ou nil s'il est
+  ;; introuvable.
+  (if (setq d (dictsearch (namedobjdict) "ACAD_VISUALSTYLE"))
+    (cdr (assoc -1 (dictsearch (cdr (assoc -1 d)) "2dWireframe")))
+    nil
+  )
+)
+
+(defun SC3D:SETUP-VIEWPORTS (vps / v ok wf)
+  ;; Regle en une fois toutes les fenetres d'une presentation (creees par
+  ;; SC3D:ADD-VIEWPORT, encore eteintes) :
+  ;;  1. gel des calques camera AVANT d'allumer les fenetres : aucune n'affiche
+  ;;     (ni ne regenere) jamais les autres cameras du dessin ;
+  ;;  2. vue papier cadree sur la zone imprimable, fenetres allumees ;
+  ;;  3. une seule entree en espace objet pour toutes : zoom sur le champ de
+  ;;     vision puis style visuel 2D filaire (seulement s'il ne l'est pas deja),
+  ;;     et retour en espace papier.
+  ;; Si le gel n'a pas pris sur une fenetre eteinte (cf. SC3D:VP-LAYERS-OK-P),
+  ;; il est refait une fois les fenetres allumees.
+  (if vps
+    (progn
+      (SC3D:VPLAYER-APPLY vps)
+      (setq ok T)
+      (foreach v vps
+        (if (not (SC3D:VP-LAYERS-OK-P v)) (setq ok nil))
+      )
+
+      ;; Sans fenetre par defaut, la vue papier initiale peut ne pas couvrir
+      ;; toute la feuille : cadrage sur la zone imprimable (fenetres encore
+      ;; eteintes, donc instantane).
+      (command "_.ZOOM" "_W"
+        (list 0.0 0.0 0.0)
+        (list (- 630.0 (* 2.0 *SC3D_PAGE_MARGIN*)) (- 297.0 (* 2.0 *SC3D_PAGE_MARGIN*)) 0.0)
+      )
+      (foreach v vps
+        (vla-Display (nth 5 v) :vlax-true)
+      )
+      (if (not ok) (SC3D:VPLAYER-APPLY vps))
+
+      (setq wf (SC3D:WIREFRAME-VS))
+      (command "_.MSPACE")
+      (foreach v vps
+        (setvar "CVPORT" (cdr (assoc 69 (entget (car v)))))
+        (SC3D:VP-ZOOM-CURRENT (nth 1 v) (nth 2 v) (nth 3 v))
+        (if (or (null wf) (not (equal (cdr (assoc 348 (entget (car v)))) wf)))
+          (SC3D:VP-WIREFRAME)
+        )
+      )
+      (command "_.PSPACE")
+    )
+  )
+)
+
+(defun SC3D:ADD-VIEWPORT (layout cx cy w h bmin bmax mrg showLay / pspc vp)
+  ;; Cree une fenetre (PViewport) centree en (cx cy) sur le papier, de taille w x h.
+  ;; Renvoie (ename bmin bmax mrg showLay objet) : le cadrage sur l'emprise
+  ;; modele bmin/bmax (mrg = marge de zoom par cote), le gel de toutes les
+  ;; cameras sauf showLay et le style visuel sont appliques ensuite a toutes les
+  ;; fenetres de la presentation en une fois (cf. SC3D:SETUP-VIEWPORTS).
   (setq pspc (vla-get-Block layout))
   (setq vp (vla-AddPViewport pspc (vlax-3d-point (list cx cy 0.0)) w h))
-  (vla-Display vp :vlax-true)
-  (setq en (vlax-vla-object->ename vp))
-  (SC3D:VP-ZOOM en bmin bmax mrg)
-  (SC3D:VP-FREEZE-CAMS en showLay)
-  (if shaded (SC3D:VP-SET-SHADE-OMBRE en))
-  vp
+  (list (vlax-vla-object->ename vp) bmin bmax mrg showLay vp)
 )
 
 (defun SC3D:SET-LAYOUT-PAPER (layout / r)
@@ -7620,7 +8266,7 @@
   (SC3D:PS-RECT layout (+ w1 w2) 0.0 (+ w1 w2 w3) uh)
 )
 
-(defun SC3D:EXPORT-MAKE-LAYOUT (baseName legendBox existRec projRec camMrg legendNamePos / doc name layout uw uh w1 w2 w3 c1 c2 c3 vpW vpH midY titY infoY sitE lblE evVals pvVals)
+(defun SC3D:EXPORT-MAKE-LAYOUT (baseName legendBox existRec projRec camMrg legendNamePos / doc name layout uw uh w1 w2 w3 c1 c2 c3 vpW vpH midY titY infoY sitE lblE evVals pvVals vps)
   ;; Cree une presentation en 3 volets, ENTIEREMENT dans la zone imprimable
   ;; (papier 630 x 297 paysage, marges 13 mm -> zone utile 604 x 271 ; l'origine
   ;; (0,0) de l'espace papier correspond au coin de cette zone) :
@@ -7687,17 +8333,25 @@
     (SC3D:PS-TEXT layout c3 titY 5.0 (strcat "Situation projet\\U+00E9e - " baseName))
   )
 
+  ;; Fenetres creees ici, reglees toutes ensemble a la fin (SC3D:SETUP-VIEWPORTS).
+  (setq vps '())
+
   ;; Volet 1 : legende, avec le nom du champ de vision a l'endroit choisi par
   ;; l'utilisateur si demande (legendNamePos = fractions fx . fy de la zone de
   ;; legende, reproduites ici sur la largeur w1 et la hauteur uh du volet).
   (if legendBox
-    (SC3D:ADD-VIEWPORT layout
-      c1 (/ uh 2.0)
-      w1 uh
-      (car legendBox) (cadr legendBox)
-      0.0
-      nil
-      nil
+    (setq vps
+      (append vps
+        (list
+          (SC3D:ADD-VIEWPORT layout
+            c1 (/ uh 2.0)
+            w1 uh
+            (car legendBox) (cadr legendBox)
+            0.0
+            nil
+          )
+        )
+      )
     )
   )
   (if legendNamePos
@@ -7710,13 +8364,18 @@
   )
 
   ;; Volet 2 : situation existante (ou camera seule) : seul son calque reste degele.
-  (SC3D:ADD-VIEWPORT layout
-    c2 midY
-    vpW vpH
-    (cdr (assoc 'bmin existRec)) (cdr (assoc 'bmax existRec))
-    camMrg
-    (cdr (assoc 'lay existRec))
-    T
+  (setq vps
+    (append vps
+      (list
+        (SC3D:ADD-VIEWPORT layout
+          c2 midY
+          vpW vpH
+          (cdr (assoc 'bmin existRec)) (cdr (assoc 'bmax existRec))
+          camMrg
+          (cdr (assoc 'lay existRec))
+        )
+      )
+    )
   )
 
   ;; Sous la fenetre : modele, capteur, focale, definition et angle de la camera.
@@ -7730,13 +8389,18 @@
   ;; toutes les autres cameras sont cachees dans cette fenetre).
   (if projRec
     (progn
-      (SC3D:ADD-VIEWPORT layout
-        c3 midY
-        vpW vpH
-        (cdr (assoc 'bmin projRec)) (cdr (assoc 'bmax projRec))
-        camMrg
-        (cdr (assoc 'lay projRec))
-        T
+      (setq vps
+        (append vps
+          (list
+            (SC3D:ADD-VIEWPORT layout
+              c3 midY
+              vpW vpH
+              (cdr (assoc 'bmin projRec)) (cdr (assoc 'bmax projRec))
+              camMrg
+              (cdr (assoc 'lay projRec))
+            )
+          )
+        )
       )
       (setq pvVals (cdr (assoc 'vals projRec)))
       (if pvVals
@@ -7744,6 +8408,9 @@
       )
     )
   )
+
+  ;; Gel des cameras, zoom et style visuel 2D filaire de toutes les fenetres.
+  (SC3D:SETUP-VIEWPORTS vps)
 
   (princ (strcat "\nPresentation creee : " name))
   name
@@ -7766,7 +8433,7 @@
   (SC3D:EXPORT-MAKE-LAYOUT base legendBox rec nil camMrg legendNamePos)
 )
 
-(defun SC3D:CMD-EXPORT (/ selEnts allEnts recs r e p1 p2 p3 w1 w2 wp3 legendBox pct camMrg groups key grp lst existR projR curtab cfg vals delChoix delCount legendNamePos legendChoix legendOui lxmin lymin lxmax lymax fx fy)
+(defun SC3D:CMD-EXPORT (/ selEnts allEnts recs r e p1 p2 p3 w1 w2 wp3 legendBox pct camMrg groups key grp lst existR projR curtab cfg vals delChoix delCount legendNamePos legendChoix legendOui lxmin lymin lxmax lymax fx fy olderr)
   (setq curtab (getvar "CTAB"))
   (if (/= curtab "Model")
     (princ "\nExport a lancer depuis l'espace objet (Model).")
@@ -7872,6 +8539,24 @@
           (setq delChoix
             (getkword "\nSupprimer les presentations d'un export precedent ? [Oui/Non] <Non> : ")
           )
+
+          ;; Fin des questions : etat d'export (reacteurs suspendus, echo coupe,
+          ;; pas de fenetre par defaut...), restaure en fin d'export comme sur
+          ;; Echap ou erreur.
+          (setq olderr *error*)
+          (defun *error* (msg)
+            ;; Retour a l'espace objet : sinon l'export suivant refuserait de
+            ;; demarrer depuis la presentation a moitie construite.
+            (vl-catch-all-apply 'setvar (list "CTAB" "Model"))
+            (SC3D:EXPORT-END)
+            (setq *error* olderr)
+            (if (and msg (/= msg "Function cancelled") (/= msg "quit / exit abort"))
+              (princ (strcat "\nErreur : " msg))
+            )
+            (princ)
+          )
+          (SC3D:EXPORT-BEGIN)
+
           (if (= delChoix "Oui")
             (progn
               (setq delCount (SC3D:DELETE-EXPORT-LAYOUTS))
@@ -7882,7 +8567,7 @@
           ;; Toutes les cameras du dessin (selectionnees ou non) recoivent leur propre
           ;; calque (nom du champ de vision + situation, ou SC3D_CV_<handle> si le
           ;; champ n'a pas de nom) : dans chaque fenetre, tous ces calques sont geles
-          ;; (liste dans *SC3D_ALL_CV_LAYERS*, cf. SC3D:VP-FREEZE-CAMS), sauf celui
+          ;; (liste dans *SC3D_ALL_CV_LAYERS*, cf. SC3D:VPLAYER-APPLY), sauf celui
           ;; de la camera presentee.
           (setq allEnts (SC3D:SSGET-CAMERAS "_X"))
           (setq *SC3D_ALL_CV_LAYERS* '())
@@ -7895,6 +8580,9 @@
               )
             )
           )
+          ;; Plusieurs cameras peuvent partager un calque (meme nom, meme
+          ;; situation) : chaque nom une seule fois dans la liste VPLAYER.
+          (setq *SC3D_ALL_CV_LAYERS* (SC3D:UNIQUE (mapcar 'strcase *SC3D_ALL_CV_LAYERS*)))
 
           (setq recs '())
           (foreach e selEnts
@@ -7950,8 +8638,11 @@
             )
           )
 
+          ;; Pas de REGEN final : l'export ne change que le calque des cameras
+          ;; (deja a jour a l'ecran), le regenerer redessinait tout le plan.
           (setvar "CTAB" "Model")
-          (command "_.REGEN")
+          (SC3D:EXPORT-END)
+          (setq *error* olderr)
           (princ "\nExport termine.")
         )
       )
