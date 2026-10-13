@@ -3190,6 +3190,9 @@
             (setq ed (append ed (list (cons 62 color))))
           )
           (entmod ed)
+          ;; Calque existant modifie (couleur, ou rallume) : l'affichage ne
+          ;; suit qu'apres une regeneration (cf. fin de SC3D:CMD-EXPORT).
+          (setq *SC3D_LAYER_CHANGED* T)
         )
       )
     )
@@ -3213,9 +3216,10 @@
     (setq s "CAMERA")
   )
   (setq s (strcase s))
-  ;; "#" "@" "~" "`" : jokers de VPLAYER (cf. SC3D:VPLAYER-APPLY), un nom de
-  ;; calque qui en contient ne se designerait plus lui-meme.
-  (setq bad '("<" ">" "/" "\\" "\"" ":" ";" "?" "*" "|" "," "=" "'" "(" ")" "[" "]" "{" "}" "." " " "#" "@" "~" "`"))
+  ;; "`" : interdit dans un nom de calque. Les jokers "#" et "@" restent
+  ;; permis (noms existants inchanges) : ils sont echappes pour VPLAYER (cf.
+  ;; SC3D:VPLAYER-NAME).
+  (setq bad '("<" ">" "/" "\\" "\"" ":" ";" "?" "*" "|" "," "=" "'" "(" ")" "[" "]" "{" "}" "." " " "`"))
   (foreach c bad
     (setq s (SC3D:REPL s c "_"))
   )
@@ -3921,16 +3925,56 @@
   (cons (reverse stack) out)
 )
 
-(defun SC3D:SEG-CROSS-P (p1 p2 p3 p4)
-  ;; T si les segments p1-p2 et p3-p4 se coupent franchement (en X/Y).
+(defun SC3D:SEG-CROSS-P (p1 p2 p3 p4 / e1 e2 d1 d2 d3 d4)
+  ;; T si p1-p2 et p3-p4 se coupent franchement (en X/Y) : extremites de chaque
+  ;; segment STRICTEMENT de part et d'autre de l'autre, a *SC3D_MERGE_TOL* pres.
+  ;; Des cotes alignes (points accroches le long d'un meme mur) ou qui se
+  ;; touchent ne comptent pas : le bruit d'arrondi les ferait sinon prendre
+  ;; pour un croisement.
+  (setq e1 (* *SC3D_MERGE_TOL* (distance p3 p4)))
+  (setq e2 (* *SC3D_MERGE_TOL* (distance p1 p2)))
+  (setq d1 (SC3D:CROSS2 p3 p4 p1))
+  (setq d2 (SC3D:CROSS2 p3 p4 p2))
+  (setq d3 (SC3D:CROSS2 p1 p2 p3))
+  (setq d4 (SC3D:CROSS2 p1 p2 p4))
   (and
-    (not (eq (> (SC3D:CROSS2 p3 p4 p1) 0.0) (> (SC3D:CROSS2 p3 p4 p2) 0.0)))
-    (not (eq (> (SC3D:CROSS2 p1 p2 p3) 0.0) (> (SC3D:CROSS2 p1 p2 p4) 0.0)))
+    (or (and (> d1 e1) (< d2 (- e1))) (and (< d1 (- e1)) (> d2 e1)))
+    (or (and (> d3 e2) (< d4 (- e2))) (and (< d3 (- e2)) (> d4 e2)))
+  )
+)
+
+(defun SC3D:PT-SEG-DIST (p a b / dx dy len2 tt)
+  ;; Distance (en X/Y) du point p au segment a-b.
+  (setq dx (- (car b) (car a)))
+  (setq dy (- (cadr b) (cadr a)))
+  (setq len2 (+ (* dx dx) (* dy dy)))
+  (setq tt
+    (if (> len2 0.0)
+      (/ (+ (* (- (car p) (car a)) dx) (* (- (cadr p) (cadr a)) dy)) len2)
+      0.0
+    )
+  )
+  (if (< tt 0.0) (setq tt 0.0))
+  (if (> tt 1.0) (setq tt 1.0))
+  (distance (list (car p) (cadr p)) (list (+ (car a) (* tt dx)) (+ (cadr a) (* tt dy))))
+)
+
+(defun SC3D:SEG-CONTACT-P (p1 p2 p3 p4)
+  ;; Croisement franc OU contact (sommet de l'un sur l'autre segment, a
+  ;; *SC3D_MERGE_TOL* pres) : un polygone qui se recoupe exactement sur un de
+  ;; ses sommets (accrochage) n'a aucun croisement franc.
+  (or
+    (SC3D:SEG-CROSS-P p1 p2 p3 p4)
+    (< (SC3D:PT-SEG-DIST p1 p3 p4) *SC3D_MERGE_TOL*)
+    (< (SC3D:PT-SEG-DIST p2 p3 p4) *SC3D_MERGE_TOL*)
+    (< (SC3D:PT-SEG-DIST p3 p1 p2) *SC3D_MERGE_TOL*)
+    (< (SC3D:PT-SEG-DIST p4 p1 p2) *SC3D_MERGE_TOL*)
   )
 )
 
 (defun SC3D:POLY-SIMPLE-P (poly / n i j ok)
-  ;; nil si deux cotes non voisins du polygone se coupent (auto-intersectant).
+  ;; nil si deux cotes non voisins du polygone se coupent ou se touchent
+  ;; (auto-intersectant).
   (setq n (length poly))
   (setq ok T)
   (setq i 0)
@@ -3939,7 +3983,7 @@
     (while (and ok (< j n))
       (if (and
             (not (and (= i 0) (= j (- n 1))))
-            (SC3D:SEG-CROSS-P
+            (SC3D:SEG-CONTACT-P
               (nth i poly) (nth (rem (+ i 1) n) poly)
               (nth j poly) (nth (rem (+ j 1) n) poly)
             )
@@ -6404,6 +6448,60 @@
 )
 
 ;; ------------------------------------------------------------------------------------
+;; ACTUALISER (regenerer les champs de vision existants avec le code actuel)
+;;
+;; Les blocs camera crees ou ajustes avec une version precedente gardent leur
+;; ancienne geometrie (ex. une hachure par triangle de l'ajustement au lieu
+;; d'une seule par zone PPM) tant qu'ils ne sont pas regeneres. Cette commande
+;; les regenere en place a partir de leurs xdata : configuration, position,
+;; rotation, ajustement et visibilite sont conserves.
+;; ------------------------------------------------------------------------------------
+
+(defun SC3D:REGEN-CAMERAS (ents / n)
+  ;; Nombre de cameras de ents regenerees.
+  (setq n 0)
+  (foreach e ents
+    (if (SC3D:REGEN-CAMERA-GEOM e)
+      (setq n (+ n 1))
+    )
+  )
+  n
+)
+
+(defun SC3D:CMD-ACTUALISER (/ ents r)
+  (setq ents (SC3D:SELECT-CAMERA-BLOCKS "\nSelectionner les champs de vision a mettre a jour : "))
+
+  (if (not ents)
+    (princ "\nAucun bloc camera selectionne.")
+    (progn
+      ;; Reacteurs des reperes nom suspendus pendant les redefinitions de blocs
+      ;; (rien ne bouge : inutile de recalculer les traits apres chaque camera),
+      ;; leves meme en cas d'erreur.
+      (setq *SC3D_LBL_BUSY* T)
+      (setq r (vl-catch-all-apply 'SC3D:REGEN-CAMERAS (list ents)))
+      (setq *SC3D_LBL_BUSY* nil)
+      (SC3D:LBL-SET-MARK)
+      (SC3D:REGEN-VIEW)
+      (if (vl-catch-all-error-p r)
+        (princ (strcat "\nErreur pendant la mise a jour : " (vl-catch-all-error-message r)))
+        (princ
+          (strcat
+            "\n" (itoa r) " champ(s) de vision mis a jour"
+            (if (< r (length ents))
+              (strcat " (" (itoa (- (length ents) r)) " illisible(s), non modifie(s))")
+              ""
+            )
+            "."
+          )
+        )
+      )
+    )
+  )
+
+  (princ)
+)
+
+;; ------------------------------------------------------------------------------------
 ;; REPERE "NOM DU CHAMP DE VISION" (rectangle + nom, relie a la camera par un trait)
 ;;
 ;; Le repere est un bloc (cadre + nom, centres sur son point d'insertion) et le
@@ -7790,9 +7888,14 @@
           (setq *SC3D_CLIP_TRIS* (SC3D:EAR-CLIP-TRIANGULATE (SC3D:CLIP-DEDUPE (cdr clip))))
           (setq frags (SC3D:CLIP-FLAT-POLY poly))
           (setq *SC3D_CLIP_TRIS* oldTris)
+          ;; Fragments d'aire nulle (ajustement qui touche seulement le champ)
+          ;; ignores, comme pour les hachures : sinon la fenetre serait cadree
+          ;; sur un trait ou un point.
           (setq all '())
           (foreach frag frags
-            (setq all (append all frag))
+            (if (> (abs (SC3D:POLY-SIGNED-AREA2 frag)) (* *SC3D_MERGE_TOL* *SC3D_MERGE_TOL*))
+              (setq all (append all frag))
+            )
           )
         )
       )
@@ -7861,6 +7964,7 @@
   ;;  - REGENMODE memorise : SC3D:DELETE-EXPORT-LAYOUTS le coupe le temps des
   ;;    suppressions.
   (setq *SC3D_LBL_BUSY* T)
+  (setq *SC3D_LAYER_CHANGED* nil)
   (setq *SC3D_EXPORT_SAVED*
     (vl-remove nil
       (list
@@ -7869,6 +7973,40 @@
         (SC3D:SETVAR-SAFE "LAYOUTCREATEVIEWPORT" 0)
         (SC3D:SETVAR-SAFE "REGENMODE" (getvar "REGENMODE"))
       )
+    )
+  )
+  ;; CREATEVIEWPORTS / LAYOUTCREATEVIEWPORT sont enregistrees dans le registre
+  ;; (profil), pas dans le dessin : si BricsCAD s'arretait en plein export,
+  ;; elles resteraient a 0 pour tous les dessins. Valeurs a restaurer notees
+  ;; hors du dessin, reprises au prochain chargement du script (cf.
+  ;; SC3D:RESTORE-PENDING-SYSVARS) et effacees en fin d'export.
+  (setenv "SC3D_RESTORE_SYSVARS"
+    (SC3D:JOIN
+      (mapcar
+        '(lambda (s) (strcat (car s) "=" (itoa (cdr s))))
+        (vl-remove-if-not
+          '(lambda (s) (member (car s) '("CREATEVIEWPORTS" "LAYOUTCREATEVIEWPORT")))
+          *SC3D_EXPORT_SAVED*
+        )
+      )
+      ";"
+    )
+  )
+)
+
+(defun SC3D:RESTORE-PENDING-SYSVARS (/ s kv)
+  ;; Restaure les variables du registre laissees a 0 par un export interrompu
+  ;; (BricsCAD ferme ou plante pendant l'export, cf. SC3D:EXPORT-BEGIN).
+  (setq s (getenv "SC3D_RESTORE_SYSVARS"))
+  (if (and s (/= s ""))
+    (progn
+      (foreach pair (SC3D:SPLIT s ";")
+        (setq kv (SC3D:SPLIT pair "="))
+        (if (= (length kv) 2)
+          (vl-catch-all-apply 'setvar (list (car kv) (atoi (cadr kv))))
+        )
+      )
+      (setenv "SC3D_RESTORE_SYSVARS" "")
     )
   )
 )
@@ -7888,23 +8026,31 @@
   out
 )
 
-(defun SC3D:EXPORT-END (/ before e ed)
+(defun SC3D:EXPORT-END (/ guard before after e)
   ;; Remettre CREATEVIEWPORTS a 1 peut creer une fenetre dans chaque
-  ;; presentation qui n'en a pas (constate sous BricsCAD V22) : les fenetres
-  ;; apparues pendant la restauration sont supprimees aussitot.
-  (if (assoc "CREATEVIEWPORTS" *SC3D_EXPORT_SAVED*)
-    (setq before (SC3D:VIEWPORT-HANDLES))
+  ;; presentation qui n'en a pas (constate sous BricsCAD V22) : toute fenetre
+  ;; apparue pendant la restauration (et seulement celles-la : rien d'autre ne
+  ;; s'execute entre les deux releves) est supprimee aussitot.
+  (setq guard (assoc "CREATEVIEWPORTS" *SC3D_EXPORT_SAVED*))
+  (if guard
+    (progn
+      (setq before (vl-catch-all-apply 'SC3D:VIEWPORT-HANDLES nil))
+      (if (vl-catch-all-error-p before) (setq guard nil))
+    )
   )
   (foreach s *SC3D_EXPORT_SAVED*
     (vl-catch-all-apply 'setvar (list (car s) (cdr s)))
   )
-  (if (assoc "CREATEVIEWPORTS" *SC3D_EXPORT_SAVED*)
-    (foreach h (SC3D:VIEWPORT-HANDLES)
-      (if (and (not (member h before))
-               (setq e (handent h))
-               (setq ed (entget e))
-               (/= (cdr (assoc 69 ed)) 1))
-        (entdel e)
+  (setenv "SC3D_RESTORE_SYSVARS" "")
+  (if guard
+    (progn
+      (setq after (vl-catch-all-apply 'SC3D:VIEWPORT-HANDLES nil))
+      (if (not (vl-catch-all-error-p after))
+        (foreach h after
+          (if (and (not (member h before)) (setq e (handent h)))
+            (entdel e)
+          )
+        )
       )
     )
   )
@@ -8061,6 +8207,20 @@
   (reverse out)
 )
 
+(defun SC3D:VPLAYER-NAME (lay)
+  ;; Nom de calque tel que VPLAYER doit le recevoir : ses noms sont des motifs
+  ;; (comme wcmatch), "#" (un chiffre) et "@" (une lettre) sont donc echappes
+  ;; pour designer le calque lui-meme. Les jokers volontaires ("SC3D_CV_*") ne
+  ;; contiennent ni l'un ni l'autre. (Pas de SC3D:REPL ici : il reprend sa
+  ;; recherche au debut et bouclerait sans fin, "`#" contenant "#".)
+  (apply 'strcat
+    (mapcar
+      '(lambda (c) (if (member c '("#" "@")) (strcat "`" c) c))
+      (mapcar 'chr (vl-string->list lay))
+    )
+  )
+)
+
 (defun SC3D:VPLAYER-APPLY (vps / v)
   ;; Gel de calques propre a chaque fenetre via VPLAYER (fiable sous BricsCAD,
   ;; contrairement a la modification directe des entrees 331 du VIEWPORT) :
@@ -8073,11 +8233,11 @@
   (foreach v vps
     ;; Liste envoyee par morceaux courts : avec beaucoup de cameras, une seule
     ;; chaine pourrait depasser la longueur acceptee par l'invite.
-    (foreach s (SC3D:JOIN-CHUNKS (SC3D:VP-HIDE-LIST v) "," 250)
+    (foreach s (SC3D:JOIN-CHUNKS (mapcar 'SC3D:VPLAYER-NAME (SC3D:VP-HIDE-LIST v)) "," 250)
       (command "_Freeze" s "_Select" (car v) "")
     )
     (if (nth 4 v)
-      (command "_Thaw" (nth 4 v) "_Select" (car v) "")
+      (command "_Thaw" (SC3D:VPLAYER-NAME (nth 4 v)) "_Select" (car v) "")
     )
   )
   (command "")
@@ -8638,9 +8798,11 @@
             )
           )
 
-          ;; Pas de REGEN final : l'export ne change que le calque des cameras
-          ;; (deja a jour a l'ecran), le regenerer redessinait tout le plan.
+          ;; REGEN final seulement si un calque existant a ete modifie (calque de
+          ;; camera rallume ou recolore) : deplacer une camera sur son calque se
+          ;; redessine tout seul, et regenerer redessinait tout le plan.
           (setvar "CTAB" "Model")
+          (if *SC3D_LAYER_CHANGED* (command "_.REGEN"))
           (SC3D:EXPORT-END)
           (setq *error* olderr)
           (princ "\nExport termine.")
@@ -8652,10 +8814,10 @@
 )
 
 (defun SC3D:MENU-CAMERA (/ choix)
-  (initget "C M L J A S T V E")
+  (initget "C M L J A S T V U E")
   (setq choix
     (getkword
-      "\nCamera - action [Creer/Modifier/caLculer/aJuster/Ajouter/Supprimer/Texte/Visibilite/Exporter] <C> : "
+      "\nCamera - action [Creer/Modifier/caLculer/aJuster/Ajouter/Supprimer/Texte/Visibilite/actUaliser/Exporter] <C> : "
     )
   )
   (if (null choix)
@@ -8692,6 +8854,9 @@
     ((= choix "V")
       (SC3D:CMD-VISIBILITE)
     )
+    ((= choix "U")
+      (SC3D:CMD-ACTUALISER)
+    )
     ((= choix "E")
       (SC3D:CMD-EXPORT)
     )
@@ -8712,6 +8877,10 @@
 ;; Reperes "nom du champ de vision" : reacteurs qui gardent le trait relie a la
 ;; camera (cf. SC3D:LBL-START), jamais bloquants pour le chargement du script.
 (vl-catch-all-apply 'SC3D:LBL-START nil)
+
+;; Variables du registre laissees a 0 par un export interrompu (cf.
+;; SC3D:EXPORT-BEGIN) : restaurees au chargement.
+(vl-catch-all-apply 'SC3D:RESTORE-PENDING-SYSVARS nil)
 
 ;; ------------------------------------------------------------------------------------ C_S_IA_IMAGE_VECTEUR ------------------------------------------------------------------------------------
 
