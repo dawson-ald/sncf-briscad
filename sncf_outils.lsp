@@ -2446,6 +2446,8 @@
 )
 
 (defun SC3D:DOWNLOAD-GITHUB-CAMERAS ()
+  ;; Nouveau fichier : la liste en cache (cf. SC3D:LOAD-CAMERAS-FROM) est perimee.
+  (setq *SC3D_CAMS_CACHE* nil)
   (SC3D:DOWNLOAD-VIA-POWERSHELL *SC3D_GITHUB_CFG_URL* (SC3D:GITHUB-CFG-PATH))
 )
 
@@ -2467,20 +2469,39 @@
   *SC3D_GITHUB_CAMERAS_OK*
 )
 
-(defun SC3D:READ-LINES (path / f line out)
+(defun SC3D:STRIP-BOM (s / c)
+  ;; Retire la marque d'ordre UTF-8 (BOM) en tete de fichier : le fichier GitHub
+  ;; est ecrit en UTF-8 avec BOM par PowerShell, et lu tel quel le premier
+  ;; fabricant devenait "ï»¿Hanwha Vision", en double de "Hanwha Vision".
+  (setq c (vl-string->list s))
+  (cond
+    ((and (>= (length c) 3) (= (car c) 239) (= (cadr c) 187) (= (caddr c) 191)) (substr s 4))
+    ((and c (= (car c) 65279)) (substr s 2))
+    (T s)
+  )
+)
+
+(defun SC3D:READ-LINES (path / f line out first)
   (setq out '())
+  (setq first T)
   (if (findfile path)
     (progn
       (setq f (open path "r"))
       (while (setq line (read-line f))
+        (if first
+          (progn
+            (setq line (SC3D:STRIP-BOM line))
+            (setq first nil)
+          )
+        )
         (if (/= line "")
-          (setq out (append out (list line)))
+          (setq out (cons line out))
         )
       )
       (close f)
     )
   )
-  out
+  (reverse out)
 )
 
 (defun SC3D:WRITE-LINES (path lines / f)
@@ -2532,15 +2553,31 @@
   )
 )
 
-(defun SC3D:LOAD-CAMERAS-FROM (path / out cam)
-  (setq out '())
-  (foreach l (SC3D:READ-LINES path)
-    (setq cam (SC3D:CAM-LINE->ALIST l))
-    (if cam
-      (setq out (append out (list cam)))
+;; Cache de SC3D:LOAD-CAMERAS-FROM : (chemin date taille cameras). La boite de
+;; dialogue Creer/Modifier relisait et analysait le fichier a chaque liste
+;; remplie (fabricants, modeles, camera courante...), plusieurs fois par
+;; ouverture ; il n'est relu que s'il a change (date ou taille).
+(setq *SC3D_CAMS_CACHE* nil)
+
+(defun SC3D:LOAD-CAMERAS-FROM (path / stamp out cam)
+  (setq stamp (list (vl-file-systime path) (vl-file-size path)))
+  (if (and *SC3D_CAMS_CACHE*
+           (= (car *SC3D_CAMS_CACHE*) path)
+           (equal (cadr *SC3D_CAMS_CACHE*) stamp))
+    (caddr *SC3D_CAMS_CACHE*)
+    (progn
+      (setq out '())
+      (foreach l (SC3D:READ-LINES path)
+        (setq cam (SC3D:CAM-LINE->ALIST l))
+        (if cam
+          (setq out (cons cam out))
+        )
+      )
+      (setq out (reverse out))
+      (setq *SC3D_CAMS_CACHE* (list path stamp out))
+      out
     )
   )
-  out
 )
 
 (defun SC3D:LOAD-CAMERAS ()
@@ -2555,6 +2592,8 @@
     (setq lines (append lines (list (SC3D:CAM-ALIST->LINE cam))))
   )
   (SC3D:WRITE-LINES (SC3D:CFG-PATH) lines)
+  ;; Fichier reecrit : la date peut ne pas changer dans la meme seconde.
+  (setq *SC3D_CAMS_CACHE* nil)
 )
 
 (defun SC3D:CAM-MFR-LIST (/ cams out)
@@ -2765,70 +2804,97 @@
   )
 )
 
+(defun SC3D:WRITE-CAM-DIALOG (f name title)
+  ;; Ecrit dans le fichier DCL f la boite Creer/Modifier, sous le nom name et
+  ;; le titre title. Deux colonnes : camera et champ de vision a gauche,
+  ;; implantation et affichage a droite (fenetre moins haute que l'ancienne
+  ;; colonne unique) ; dans chaque cadre les champs de saisie sont alignes.
+  (foreach l
+    (list
+      (strcat name " : dialog {")
+      (strcat "  label = \"" title "\";")
+      "  : row {"
+      "    : column {"
+      "      : boxed_column {"
+      "        label = \"Camera\";"
+      "        : popup_list { key = \"source\"; label = \"Source\"; edit_width = 30; }"
+      "        : popup_list { key = \"manu\"; label = \"Fabricant\"; edit_width = 30; }"
+      "        : popup_list { key = \"model\"; label = \"Modele\"; edit_width = 30; }"
+      "        : text { key = \"caminfo\"; label = \"\"; width = 46; }"
+      "        : text { key = \"caminfo2\"; label = \"\"; width = 46; }"
+      "      }"
+      "      : boxed_column {"
+      "        label = \"Optique et resolution\";"
+      "        : popup_list { key = \"fmt\"; label = \"Capteur\"; edit_width = 30; }"
+      "        : popup_list { key = \"res\"; label = \"Resolution\"; edit_width = 30; }"
+      "        : edit_box { key = \"focal\"; label = \"Focale (mm)\"; edit_width = 10; fixed_width = true; }"
+      "      }"
+      "      : boxed_column {"
+      "        label = \"Champ de vision\";"
+      "        : edit_box { key = \"camname\"; label = \"Nom (ex. Q1-C03)\"; edit_width = 30; }"
+      "        : popup_list { key = \"situation\"; label = \"Situation\"; edit_width = 30; }"
+      "        : popup_list { key = \"view\"; label = \"Vue\"; edit_width = 30; }"
+      "      }"
+      "    }"
+      "    : column {"
+      "      : boxed_column {"
+      "        label = \"Implantation\";"
+      "        : edit_box { key = \"dist\"; label = \"Distance max (m)\"; edit_width = 10; fixed_width = true; }"
+      "        : edit_box { key = \"camh\"; label = \"Hauteur camera (m)\"; edit_width = 10; fixed_width = true; }"
+      "        : edit_box { key = \"objh\"; label = \"Hauteur objectif (m)\"; edit_width = 10; fixed_width = true; }"
+      "        : popup_list { key = \"std\"; label = \"Norme DORI\"; edit_width = 10; fixed_width = true; }"
+      "      }"
+      "      : boxed_column {"
+      "        label = \"Affichage\";"
+      "        : edit_box { key = \"trans\"; label = \"Transparence (0-90 %)\"; edit_width = 10; fixed_width = true; }"
+      "        : toggle { key = \"grid\"; label = \"Afficher la grille\"; }"
+      "        : toggle { key = \"show_dist\"; label = \"Afficher les metres dans l'axe\"; }"
+      "        : toggle { key = \"use_hatch\"; label = \"Hachure unique (au lieu des zones PPM)\"; }"
+      "        : row {"
+      "          : text { key = \"hatch_info\"; label = \"\"; width = 30; }"
+      "          : button { key = \"btn_regen\"; label = \"Generer\"; width = 10; fixed_width = true; }"
+      "        }"
+      "      }"
+      "    }"
+      "  }"
+      "  : errtile { key = \"msg\"; }"
+      ;; "Voir le dessin" sur sa propre ligne, au-dessus de OK / Appliquer / Annuler.
+      "  : button { key = \"nav\"; label = \"Voir le dessin\"; fixed_width = true; width = 30; alignment = centered; }"
+      "  : row {"
+      "    fixed_width = true;"
+      "    alignment = centered;"
+      "    : retirement_button { key = \"accept\"; label = \"OK\"; is_default = true; fixed_width = true; width = 12; }"
+      "    : retirement_button { key = \"apply\"; label = \"Appliquer\"; fixed_width = true; width = 12; }"
+      "    : retirement_button { key = \"cancel\"; label = \"Annuler\"; is_cancel = true; fixed_width = true; width = 12; }"
+      "  }"
+      "}"
+      ""
+    )
+    (write-line l f)
+  )
+)
+
+;; Fichier DCL de la boite Creer/Modifier : ecrit et charge une seule fois par
+;; session (cf. SC3D:DIALOG-ID), au lieu d'etre reecrit puis recharge a chaque
+;; ouverture - chaque nouveau fichier temporaire pouvait en plus etre analyse
+;; par l'antivirus avant de s'ouvrir.
+(setq *SC3D_DCL_ID* nil)
+
 (defun SC3D:MAKE-DCL (/ fn f)
   (setq fn (strcat (getvar "TEMPPREFIX") "sc3d_camera_jvsg.dcl"))
   (setq f (open fn "w"))
-
-  (write-line "sc3d_dialog : dialog {" f)
-  (write-line "  label = \"SNCF - Champ de vision camera\";" f)
-  (write-line "  width = 65;" f)
-  (write-line "  : column {" f)
-
-  (write-line "    : boxed_column {" f)
-  (write-line "      label = \"1. Camera\";" f)
-  (write-line "      : popup_list { key = \"source\"; label = \"Source des cameras\"; width = 38; }" f)
-  (write-line "      : popup_list { key = \"manu\"; label = \"Fabricant\"; width = 38; }" f)
-  (write-line "      : popup_list { key = \"model\"; label = \"Modele\"; width = 38; }" f)
-  (write-line "      : edit_box { key = \"camname\"; label = \"Nom du champ (optionnel)\"; edit_width = 24; }" f)
-  (write-line "      : popup_list { key = \"situation\"; label = \"Situation\"; width = 22; }" f)
-  (write-line "    }" f)
-
-  (write-line "    : boxed_column {" f)
-  (write-line "      label = \"2. Optique et resolution\";" f)
-  (write-line "      : popup_list { key = \"fmt\"; label = \"Capteur\"; width = 38; }" f)
-  (write-line "      : popup_list { key = \"res\"; label = \"Resolution\"; width = 38; }" f)
-  (write-line "      : edit_box { key = \"focal\"; label = \"Focale mm\"; edit_width = 10; }" f)
-  (write-line "      : text { key = \"caminfo\"; label = \"\"; width = 48; }" f)
-  (write-line "    }" f)
-
-  (write-line "    : boxed_column {" f)
-  (write-line "      label = \"3. Implantation\";" f)
-  (write-line "      : edit_box { key = \"dist\"; label = \"Distance max (m)\"; edit_width = 10; }" f)
-  (write-line "      : edit_box { key = \"camh\"; label = \"Hauteur camera (m)\"; edit_width = 10; }" f)
-  (write-line "      : edit_box { key = \"objh\"; label = \"Hauteur objectif (m)\"; edit_width = 10; }" f)
-  (write-line "      : popup_list { key = \"std\"; label = \"DORI\"; width = 12; }" f)
-  (write-line "    }" f)
-
-  (write-line "    : boxed_column {" f)
-  (write-line "      label = \"4. Affichage\";" f)
-  (write-line "      : popup_list { key = \"view\"; label = \"Vue\"; width = 22; }" f)
-  (write-line "      : toggle { key = \"grid\"; label = \"Afficher la grille\"; }" f)
-  (write-line "      : toggle { key = \"show_dist\"; label = \"Afficher les metres dans l'axe\"; }" f)
-  (write-line "      : edit_box { key = \"trans\"; label = \"Transparence (0-90%)\"; edit_width = 10; }" f)
-  (write-line "      : toggle { key = \"use_hatch\"; label = \"Hachure unique (vue du dessus, au lieu des zones PPM)\"; }" f)
-  (write-line "      : row {" f)
-  (write-line "        : text { key = \"hatch_info\"; label = \"Motif : ANSI31  Couleur : 1\"; width = 38; }" f)
-  (write-line "        : button { key = \"btn_regen\"; label = \"Generer\"; width = 10; }" f)
-  (write-line "      }" f)
-  (write-line "    }" f)
-
-  (write-line "    : errtile { key = \"msg\"; }" f)
-  ;; "Voir le dessin" sur sa propre ligne, au-dessus des boutons OK / Appliquer / Annuler.
-  (write-line "    : button { key = \"nav\"; label = \"Voir le dessin\"; fixed_width = true; width = 30; alignment = centered; }" f)
-  (write-line "    : row {" f)
-  (write-line "      fixed_width = true;" f)
-  (write-line "      alignment = centered;" f)
-  (write-line "      : retirement_button { key = \"accept\"; label = \"OK\"; is_default = true; fixed_width = true; width = 10; }" f)
-  (write-line "      spacer;" f)
-  (write-line "      : retirement_button { key = \"apply\"; label = \"Appliquer\"; fixed_width = true; width = 12; }" f)
-  (write-line "      spacer;" f)
-  (write-line "      : retirement_button { key = \"cancel\"; label = \"Annuler\"; is_cancel = true; fixed_width = true; width = 10; }" f)
-  (write-line "    }" f)
-  (write-line "  }" f)
-  (write-line "}" f)
-
+  (SC3D:WRITE-CAM-DIALOG f "sc3d_dialog_new" "SNCF - Nouveau champ de vision camera")
+  (SC3D:WRITE-CAM-DIALOG f "sc3d_dialog_mod" "SNCF - Modifier le champ de vision camera")
   (close f)
   fn
+)
+
+(defun SC3D:DIALOG-ID ()
+  ;; Identifiant du DCL charge (ecrit et charge au premier appel de la session).
+  (if (or (null *SC3D_DCL_ID*) (< *SC3D_DCL_ID* 0))
+    (setq *SC3D_DCL_ID* (load_dialog (SC3D:MAKE-DCL)))
+  )
+  *SC3D_DCL_ID*
 )
 
 (defun SC3D:DLG-HATCH-UPDATE ()
@@ -2911,13 +2977,13 @@
           (mode_tile "fmt" 1)
           (mode_tile "res" 1)
 
+          ;; Sur deux lignes : la colonne est plus etroite que l'ancienne fenetre.
           (set_tile "caminfo"
+            (strcat "Focale de " (rtos fmin 2 1) " a " (rtos fmax 2 1) " mm")
+          )
+          (set_tile "caminfo2"
             (strcat
-              "Focale de "
-              (rtos fmin 2 1)
-              " a "
-              (rtos fmax 2 1)
-              " mm / H "
+              "Angle H "
               (rtos (cdr (assoc 'hmax cam)) 2 1)
               " a "
               (rtos (cdr (assoc 'hmin cam)) 2 1)
@@ -2929,12 +2995,17 @@
             )
           )
         )
+        (progn
+          (set_tile "caminfo" "")
+          (set_tile "caminfo2" "")
+        )
       )
     )
     (progn
       (mode_tile "fmt" 0)
       (mode_tile "res" 0)
-      (set_tile "caminfo" "Mode manuel : capteur, resolution et focale libres.")
+      (set_tile "caminfo" "Mode manuel :")
+      (set_tile "caminfo2" "capteur, resolution et focale libres.")
     )
   )
 )
@@ -3070,12 +3141,13 @@
   ;; n'y a pas encore d'entite a mettre a jour).
   ;; La fenetre est rouverte apres chaque "Voir le dessin" (start_dialog = 2,
   ;; cf. SC3D:NAV-DLG), au meme endroit, avec les valeurs qui y etaient saisies.
-  (setq dcl (SC3D:MAKE-DCL))
-  (setq id (load_dialog dcl))
+  (setq id (SC3D:DIALOG-ID))
+  ;; Titre selon le cas : nouveau champ de vision ou modification.
+  (setq dcl (if applyFn "sc3d_dialog_mod" "sc3d_dialog_new"))
   (setq *SC3D_DLG_APPLY_FN* applyFn)
 
   (while (not done)
-    (if (not (if pos (new_dialog "sc3d_dialog" id "" pos) (new_dialog "sc3d_dialog" id)))
+    (if (not (if pos (new_dialog dcl id "" pos) (new_dialog dcl id)))
       (setq done T)
       (progn
         ;; Retour de "Voir le dessin" : valeurs saisies avant de fermer.
@@ -3179,7 +3251,8 @@
             (SC3D:SET-POPUP-LIST "model" *SC3D_MODEL_LIST* "Manuel")
             (set_tile "fmt" (itoa (SC3D:INDEXOF "1/2.8" *SC3D_SENSOR_LIST*)))
             (set_tile "res" (itoa (SC3D:INDEXOF "1920x1080 (2MP 16:9)" *SC3D_RES_LIST*)))
-            (set_tile "std" "0")
+            ;; Nouvelle camera : norme DORI 2025 par defaut.
+            (set_tile "std" (itoa (SC3D:INDEXOF "2025" *SC3D_STD_LIST*)))
             (set_tile "view" "0")
             (set_tile "camname" "")
             (set_tile "situation" "0")
@@ -3234,7 +3307,8 @@
     )
   )
 
-  (unload_dialog id)
+  ;; Pas d'unload_dialog : le DCL reste charge pour les ouvertures suivantes
+  ;; (cf. SC3D:DIALOG-ID).
   (setq *SC3D_DLG_APPLY_FN* nil)
   result
 )
