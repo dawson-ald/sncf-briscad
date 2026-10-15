@@ -380,6 +380,45 @@
   (princ)
 )
 
+;; ------------------------------------------------------------------------------------
+;; S_UPDATE : tout actualiser
+;;
+;; Met a jour les scripts SNCF (S_MAJ), puis chaque donnee que les modules ont
+;; inscrite avec SNCF:REGISTER-UPDATE (ex. liste des cameras GitHub, cf.
+;; C_S_CAMERA.lsp). *SNCF_UPDATE_HOOKS* (liste de (fonction . libelle)) n'est
+;; pas remise a zero au rechargement : les modules s'y reinscrivent sans doublon.
+;; ------------------------------------------------------------------------------------
+
+(defun SNCF:REGISTER-UPDATE (fn label)
+  (setq *SNCF_UPDATE_HOOKS*
+    (append
+      (vl-remove-if '(lambda (h) (eq (car h) fn)) *SNCF_UPDATE_HOOKS*)
+      (list (cons fn label))
+    )
+  )
+)
+
+(defun C:S_UPDATE (/ r h)
+  (princ "\n--- Scripts SNCF ---")
+  (setq r (vl-catch-all-apply 'C:S_MAJ nil))
+  (if (vl-catch-all-error-p r)
+    (princ (strcat "\nErreur : " (vl-catch-all-error-message r)))
+  )
+
+  ;; Relu apres S_MAJ : si les scripts ont ete recharges, les modules se sont
+  ;; reinscrits avec leur nouvelle version.
+  (foreach h *SNCF_UPDATE_HOOKS*
+    (princ (strcat "\n--- " (cdr h) " ---"))
+    (setq r (vl-catch-all-apply (car h) nil))
+    (if (vl-catch-all-error-p r)
+      (princ (strcat "\nErreur : " (vl-catch-all-error-message r)))
+    )
+  )
+
+  (princ "\nActualisation terminee.")
+  (princ)
+)
+
 (if (not *SNCF_MAJ_AUTO_DONE*)
   (progn
     (setq *SNCF_MAJ_AUTO_DONE* T)
@@ -2449,8 +2488,10 @@
   (SC3D:DOWNLOAD-VIA-POWERSHELL *SC3D_GITHUB_CFG_URL* (SC3D:GITHUB-CFG-PATH))
 )
 
-(setq *SC3D_GITHUB_CAMERAS_FETCHED* nil)
-(setq *SC3D_GITHUB_CAMERAS_OK* nil)
+;; *SC3D_GITHUB_CAMERAS_FETCHED* / *SC3D_GITHUB_CAMERAS_OK* ne sont pas remis a
+;; zero au rechargement du script (S_MAJ, S_UPDATE) : la liste deja telechargee
+;; dans la session reste valable, et S_UPDATE la retelecharge explicitement
+;; (cf. SC3D:REFRESH-GITHUB-CAMERAS).
 
 (defun SC3D:ENSURE-GITHUB-CAMERAS ()
   ;; Ne telecharge la liste GitHub qu'une seule fois par session (au chargement
@@ -2465,6 +2506,82 @@
     )
   )
   *SC3D_GITHUB_CAMERAS_OK*
+)
+
+(defun SC3D:REFRESH-GITHUB-CAMERAS (/ dst tmp ok)
+  ;; Retelecharge la liste GitHub meme si elle l'a deja ete dans la session
+  ;; (commande S_UPDATE). Telechargee dans un fichier a part, qui ne remplace
+  ;; l'ancienne liste qu'en cas de succes : sans reseau, la liste deja
+  ;; telechargee reste utilisable. Renvoie T si la liste a ete mise a jour.
+  (setq dst (SC3D:GITHUB-CFG-PATH))
+  (setq tmp (strcat dst ".new"))
+  (setq ok (SC3D:DOWNLOAD-VIA-POWERSHELL *SC3D_GITHUB_CFG_URL* tmp))
+  (if ok
+    (progn
+      (if (findfile dst) (vl-file-delete dst))
+      (setq ok (vl-file-rename tmp dst))
+      (if (not ok)
+        (setq *SC3D_LAST_DL_ERROR* "Impossible de remplacer l'ancienne liste telechargee.")
+      )
+    )
+  )
+  (setq *SC3D_GITHUB_CAMERAS_FETCHED* T)
+  (setq *SC3D_GITHUB_CAMERAS_OK* (if (or ok (findfile dst)) T nil))
+  ok
+)
+
+(defun SC3D:UPDATE-HOOK (/ ok n ents ch r)
+  ;; Partie camera de S_UPDATE (cf. SNCF:REGISTER-UPDATE dans F_MAJ.lsp) :
+  ;; liste des cameras GitHub retelechargee, puis, si le dessin contient des
+  ;; champs de vision, proposition de les actualiser tous (angles relus dans la
+  ;; liste a jour, une hachure par zone...). Non par defaut : cela modifie le
+  ;; dessin.
+  (setq ok (SC3D:REFRESH-GITHUB-CAMERAS))
+  (setq n (length (SC3D:LOAD-CAMERAS-FROM (SC3D:GITHUB-CFG-PATH))))
+  (if ok
+    (princ (strcat "\nListe des cameras GitHub mise a jour : " (itoa n) " camera(s)."))
+    (princ
+      (strcat
+        "\nListe des cameras GitHub non mise a jour"
+        (if *SC3D_LAST_DL_ERROR* (strcat " (" *SC3D_LAST_DL_ERROR* ")") "")
+        (if (> n 0) (strcat " : ancienne liste conservee (" (itoa n) " camera(s)).") ".")
+      )
+    )
+  )
+
+  (setq ents (SC3D:SSGET-CAMERAS "_X"))
+  (if ents
+    (progn
+      (initget "Oui Non")
+      (setq ch
+        (getkword
+          (strcat
+            "\nActualiser aussi les " (itoa (length ents))
+            " champ(s) de vision du dessin ? [Oui/Non] <Non> : "
+          )
+        )
+      )
+      (if (= ch "Oui")
+        (progn
+          (setq *SC3D_LBL_BUSY* T)
+          (setq r (vl-catch-all-apply 'SC3D:REGEN-CAMERAS (list ents)))
+          (setq *SC3D_LBL_BUSY* nil)
+          (SC3D:LBL-SET-MARK)
+          (SC3D:REGEN-VIEW)
+          (if (vl-catch-all-error-p r)
+            (princ (strcat "\nErreur pendant l'actualisation : " (vl-catch-all-error-message r)))
+            (princ (strcat "\n" (itoa r) " champ(s) de vision actualise(s)."))
+          )
+        )
+      )
+    )
+  )
+  (princ)
+)
+
+;; Inscription dans S_UPDATE (F_MAJ.lsp, charge avant les commandes).
+(if SNCF:REGISTER-UPDATE
+  (SNCF:REGISTER-UPDATE 'SC3D:UPDATE-HOOK "Cameras")
 )
 
 (defun SC3D:READ-LINES (path / f line out)
@@ -3179,7 +3296,8 @@
             (SC3D:SET-POPUP-LIST "model" *SC3D_MODEL_LIST* "Manuel")
             (set_tile "fmt" (itoa (SC3D:INDEXOF "1/2.8" *SC3D_SENSOR_LIST*)))
             (set_tile "res" (itoa (SC3D:INDEXOF "1920x1080 (2MP 16:9)" *SC3D_RES_LIST*)))
-            (set_tile "std" "0")
+            ;; DORI 2025 par defaut pour une nouvelle camera.
+            (set_tile "std" (itoa (SC3D:INDEXOF "2025" *SC3D_STD_LIST*)))
             (set_tile "view" "0")
             (set_tile "camname" "")
             (set_tile "situation" "0")
