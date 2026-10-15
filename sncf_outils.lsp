@@ -2820,6 +2820,8 @@
   (write-line "      spacer;" f)
   (write-line "      : retirement_button { key = \"apply\"; label = \"Appliquer\"; fixed_width = true; width = 12; }" f)
   (write-line "      spacer;" f)
+  (write-line "      : button { key = \"nav\"; label = \"Voir le dessin\"; fixed_width = true; width = 26; }" f)
+  (write-line "      spacer;" f)
   (write-line "      : retirement_button { key = \"cancel\"; label = \"Annuler\"; is_cancel = true; fixed_width = true; width = 10; }" f)
   (write-line "    }" f)
   (write-line "  }" f)
@@ -3021,158 +3023,220 @@
   )
 )
 
-(defun SC3D:DIALOG (def applyFn / dcl id result fmt res std manu model)
+(defun SC3D:NAV-DLG (/ vals)
+  ;; Bouton "Voir le dessin" : une boite DCL est toujours modale (aucun zoom ni
+  ;; panoramique possible tant qu'elle est ouverte). La fenetre est donc fermee
+  ;; le temps de naviguer dans le dessin (cf. SC3D:DLG-NAVIGATE), puis rouverte
+  ;; au meme endroit avec les valeurs saisies (cf. SC3D:DIALOG).
+  ;; En modification, les valeurs sont d'abord appliquees (comme "Appliquer"),
+  ;; pour voir le resultat ; si elles sont invalides, la fenetre reste ouverte
+  ;; avec le message d'erreur.
+  (if *SC3D_DLG_APPLY_FN*
+    (if (setq vals (SC3D:VALIDATE-DLG))
+      (progn
+        (apply *SC3D_DLG_APPLY_FN* (list vals))
+        (setq *SC3D_DLG_STATE* vals)
+        (setq *SC3D_DLG_POS* (done_dialog 2))
+      )
+    )
+    (progn
+      (setq *SC3D_DLG_STATE* (SC3D:READ-DLG))
+      (setq *SC3D_DLG_POS* (done_dialog 2))
+    )
+  )
+)
+
+(defun SC3D:DLG-NAVIGATE (/ r)
+  ;; Fenetre fermee : zoom (molette) et panoramique (clic molette maintenu, ou
+  ;; 'Z / 'P en transparent) libres jusqu'a Entree, clic droit ou clic. Echap
+  ;; revient aussi a la fenetre au lieu d'abandonner la commande.
+  (setq r
+    (vl-catch-all-apply 'getpoint
+      (list
+        (strcat
+          "\nNaviguez dans le dessin (molette : zoom, clic molette maintenu : panoramique)."
+          "\nEntree ou clic pour revenir a la fenetre camera : "
+        )
+      )
+    )
+  )
+  (princ)
+)
+
+(defun SC3D:DIALOG (def applyFn / dcl id result st pos state done fmt res std manu model)
   ;; applyFn : fonction optionnelle (quote 'SC3D:xxx) appelee avec les valeurs
   ;; courantes quand l'utilisateur clique sur "Appliquer" (applique sans
   ;; fermer la fenetre) ; nil = bouton "Appliquer" desactive (cas Creer, ou il
   ;; n'y a pas encore d'entite a mettre a jour).
+  ;; La fenetre est rouverte apres chaque "Voir le dessin" (start_dialog = 2,
+  ;; cf. SC3D:NAV-DLG), au meme endroit, avec les valeurs qui y etaient saisies.
   (setq dcl (SC3D:MAKE-DCL))
   (setq id (load_dialog dcl))
+  (setq *SC3D_DLG_APPLY_FN* applyFn)
 
-  (if (not (new_dialog "sc3d_dialog" id))
-    nil
-    (progn
-      (setq *SC3D_DLG_APPLY_FN* applyFn)
-      (mode_tile "apply" (if applyFn 0 1))
+  (while (not done)
+    (if (not (if pos (new_dialog "sc3d_dialog" id "" pos) (new_dialog "sc3d_dialog" id)))
+      (setq done T)
+      (progn
+        ;; Retour de "Voir le dessin" : valeurs saisies avant de fermer.
+        (if state (setq def state))
+        (mode_tile "apply" (if applyFn 0 1))
+        (set_tile "nav" (if applyFn "Appliquer et voir le dessin" "Voir le dessin"))
 
-      (start_list "source")
-      (mapcar 'add_list *SC3D_CAM_SOURCE_LIST*)
-      (end_list)
-      (set_tile "source" (if (= (SC3D:CAM-SOURCE) "GITHUB") "1" "0"))
+        (start_list "source")
+        (mapcar 'add_list *SC3D_CAM_SOURCE_LIST*)
+        (end_list)
+        (set_tile "source" (if (= (SC3D:CAM-SOURCE) "GITHUB") "1" "0"))
 
-      ;; Si la source persistee est GitHub, la liste a deja ete telechargee au
-      ;; chargement du script (cf. SC3D:ENSURE-GITHUB-CAMERAS en fin de
-      ;; fichier) ; on ne re-interroge pas GitHub a chaque ouverture de la
-      ;; boite de dialogue. En cas d'echec (deja survenu au chargement) on
-      ;; retombe sur le fichier local pour ne pas laisser des listes vides.
-      (if (and (= (SC3D:CAM-SOURCE) "GITHUB") (not (SC3D:ENSURE-GITHUB-CAMERAS)))
-        (progn
-          (SC3D:SET-CAM-SOURCE "LOCAL")
-          (set_tile "source" "0")
-          (set_tile "msg"
-            (strcat
-              "Impossible de recuperer la liste GitHub"
-              (if *SC3D_LAST_DL_ERROR* (strcat " : " *SC3D_LAST_DL_ERROR*) " (connexion ?).")
-              " Mode local utilise."
+        ;; Si la source persistee est GitHub, la liste a deja ete telechargee au
+        ;; chargement du script (cf. SC3D:ENSURE-GITHUB-CAMERAS en fin de
+        ;; fichier) ; on ne re-interroge pas GitHub a chaque ouverture de la
+        ;; boite de dialogue. En cas d'echec (deja survenu au chargement) on
+        ;; retombe sur le fichier local pour ne pas laisser des listes vides.
+        (if (and (= (SC3D:CAM-SOURCE) "GITHUB") (not (SC3D:ENSURE-GITHUB-CAMERAS)))
+          (progn
+            (SC3D:SET-CAM-SOURCE "LOCAL")
+            (set_tile "source" "0")
+            (set_tile "msg"
+              (strcat
+                "Impossible de recuperer la liste GitHub"
+                (if *SC3D_LAST_DL_ERROR* (strcat " : " *SC3D_LAST_DL_ERROR*) " (connexion ?).")
+                " Mode local utilise."
+              )
             )
           )
         )
-      )
 
-      (setq *SC3D_MFR_LIST* (SC3D:CAM-MFR-LIST-ACTIVE))
+        (setq *SC3D_MFR_LIST* (SC3D:CAM-MFR-LIST-ACTIVE))
 
-      (start_list "manu")
-      (mapcar 'add_list *SC3D_MFR_LIST*)
-      (end_list)
+        (start_list "manu")
+        (mapcar 'add_list *SC3D_MFR_LIST*)
+        (end_list)
 
-      (start_list "fmt")
-      (mapcar 'add_list *SC3D_SENSOR_LIST*)
-      (end_list)
+        (start_list "fmt")
+        (mapcar 'add_list *SC3D_SENSOR_LIST*)
+        (end_list)
 
-      (start_list "res")
-      (mapcar 'add_list *SC3D_RES_LIST*)
-      (end_list)
+        (start_list "res")
+        (mapcar 'add_list *SC3D_RES_LIST*)
+        (end_list)
 
-      (start_list "std")
-      (mapcar 'add_list *SC3D_STD_LIST*)
-      (end_list)
+        (start_list "std")
+        (mapcar 'add_list *SC3D_STD_LIST*)
+        (end_list)
 
-      (start_list "view")
-      (mapcar 'add_list *SC3D_VIEW_LIST*)
-      (end_list)
+        (start_list "view")
+        (mapcar 'add_list *SC3D_VIEW_LIST*)
+        (end_list)
 
-      (start_list "situation")
-      (mapcar 'add_list *SC3D_SIT_LIST*)
-      (end_list)
+        (start_list "situation")
+        (mapcar 'add_list *SC3D_SIT_LIST*)
+        (end_list)
 
-      (if def
-        (progn
-          (setq manu (cdr (assoc 'manu def)))
-          (setq model (cdr (assoc 'model def)))
-          (if (not manu) (setq manu "Manuel"))
-          (if (not model) (setq model "Manuel"))
+        (if def
+          (progn
+            (setq manu (cdr (assoc 'manu def)))
+            (setq model (cdr (assoc 'model def)))
+            (if (not manu) (setq manu "Manuel"))
+            (if (not model) (setq model "Manuel"))
 
-          (set_tile "manu" (itoa (SC3D:INDEXOF manu *SC3D_MFR_LIST*)))
-          (setq *SC3D_MODEL_LIST* (SC3D:CAM-MODEL-LIST-ACTIVE manu))
-          (SC3D:SET-POPUP-LIST "model" *SC3D_MODEL_LIST* model)
+            (set_tile "manu" (itoa (SC3D:INDEXOF manu *SC3D_MFR_LIST*)))
+            (setq *SC3D_MODEL_LIST* (SC3D:CAM-MODEL-LIST-ACTIVE manu))
+            (SC3D:SET-POPUP-LIST "model" *SC3D_MODEL_LIST* model)
 
-          (setq fmt (cdr (assoc 'fmt def)))
-          (setq res (cdr (assoc 'res def)))
-          (setq std (cdr (assoc 'std def)))
+            (setq fmt (cdr (assoc 'fmt def)))
+            (setq res (cdr (assoc 'res def)))
+            (setq std (cdr (assoc 'std def)))
 
-          (set_tile "fmt" (itoa (SC3D:INDEXOF fmt *SC3D_SENSOR_LIST*)))
-          (set_tile "res" (itoa (SC3D:INDEXOF res *SC3D_RES_LIST*)))
-          (set_tile "std" (itoa (SC3D:INDEXOF std *SC3D_STD_LIST*)))
-          (set_tile "view" (itoa (SC3D:INDEXOF (SC3D:VIEW-CODE->LABEL (cdr (assoc 'view def))) *SC3D_VIEW_LIST*)))
+            (set_tile "fmt" (itoa (SC3D:INDEXOF fmt *SC3D_SENSOR_LIST*)))
+            (set_tile "res" (itoa (SC3D:INDEXOF res *SC3D_RES_LIST*)))
+            (set_tile "std" (itoa (SC3D:INDEXOF std *SC3D_STD_LIST*)))
+            (set_tile "view" (itoa (SC3D:INDEXOF (SC3D:VIEW-CODE->LABEL (cdr (assoc 'view def))) *SC3D_VIEW_LIST*)))
 
-          (set_tile "camname" (if (cdr (assoc 'cvname def)) (cdr (assoc 'cvname def)) ""))
-          (set_tile "situation"
-            (itoa (SC3D:INDEXOF (SC3D:SIT-CODE->LABEL (cdr (assoc 'situation def))) *SC3D_SIT_LIST*))
+            (set_tile "camname" (if (cdr (assoc 'cvname def)) (cdr (assoc 'cvname def)) ""))
+            (set_tile "situation"
+              (itoa (SC3D:INDEXOF (SC3D:SIT-CODE->LABEL (cdr (assoc 'situation def))) *SC3D_SIT_LIST*))
+            )
+
+            (set_tile "focal" (rtos (cdr (assoc 'focal def)) 2 2))
+            (set_tile "dist" (rtos (cdr (assoc 'dist def)) 2 2))
+            (set_tile "camh" (rtos (cdr (assoc 'camh def)) 2 2))
+            (set_tile "objh" (rtos (cdr (assoc 'objh def)) 2 2))
+            (set_tile "grid" (if (cdr (assoc 'grid def)) "1" "0"))
+            ;; Absent (anciennes configs) = affiche par defaut.
+            (set_tile "show_dist" (if (or (not (assoc 'show_dist def)) (cdr (assoc 'show_dist def))) "1" "0"))
+            (set_tile "trans" (rtos (cdr (assoc 'trans def)) 2 0))
+
+            (setq *SC3D_CUR_HATCH_PAT* (cdr (assoc 'hatch_pattern def)))
+            (setq *SC3D_CUR_HATCH_COL* (cdr (assoc 'hatch_color def)))
+            (if (null *SC3D_CUR_HATCH_PAT*) (setq *SC3D_CUR_HATCH_PAT* "ANSI31"))
+            (if (null *SC3D_CUR_HATCH_COL*) (setq *SC3D_CUR_HATCH_COL* 1))
+            (set_tile "use_hatch" (if (cdr (assoc 'use_hatch def)) "1" "0"))
           )
-
-          (set_tile "focal" (rtos (cdr (assoc 'focal def)) 2 2))
-          (set_tile "dist" (rtos (cdr (assoc 'dist def)) 2 2))
-          (set_tile "camh" (rtos (cdr (assoc 'camh def)) 2 2))
-          (set_tile "objh" (rtos (cdr (assoc 'objh def)) 2 2))
-          (set_tile "grid" (if (cdr (assoc 'grid def)) "1" "0"))
-          ;; Absent (anciennes configs) = affiche par defaut.
-          (set_tile "show_dist" (if (or (not (assoc 'show_dist def)) (cdr (assoc 'show_dist def))) "1" "0"))
-          (set_tile "trans" (rtos (cdr (assoc 'trans def)) 2 0))
-
-          (setq *SC3D_CUR_HATCH_PAT* (cdr (assoc 'hatch_pattern def)))
-          (setq *SC3D_CUR_HATCH_COL* (cdr (assoc 'hatch_color def)))
-          (if (null *SC3D_CUR_HATCH_PAT*) (setq *SC3D_CUR_HATCH_PAT* "ANSI31"))
-          (if (null *SC3D_CUR_HATCH_COL*) (setq *SC3D_CUR_HATCH_COL* 1))
-          (set_tile "use_hatch" (if (cdr (assoc 'use_hatch def)) "1" "0"))
+          (progn
+            (set_tile "manu" "0")
+            (setq *SC3D_MODEL_LIST* '("Manuel"))
+            (SC3D:SET-POPUP-LIST "model" *SC3D_MODEL_LIST* "Manuel")
+            (set_tile "fmt" (itoa (SC3D:INDEXOF "1/2.8" *SC3D_SENSOR_LIST*)))
+            (set_tile "res" (itoa (SC3D:INDEXOF "1920x1080 (2MP 16:9)" *SC3D_RES_LIST*)))
+            (set_tile "std" "0")
+            (set_tile "view" "0")
+            (set_tile "camname" "")
+            (set_tile "situation" "0")
+            (set_tile "focal" "5")
+            (set_tile "dist" "15")
+            (set_tile "camh" "4")
+            (set_tile "objh" "2.5")
+            (set_tile "grid" "0")
+            (set_tile "show_dist" "1")
+            (set_tile "trans" "60")
+            (set_tile "use_hatch" "0")
+            (SC3D:RAND-HATCH)
+          )
         )
-        (progn
-          (set_tile "manu" "0")
-          (setq *SC3D_MODEL_LIST* '("Manuel"))
-          (SC3D:SET-POPUP-LIST "model" *SC3D_MODEL_LIST* "Manuel")
-          (set_tile "fmt" (itoa (SC3D:INDEXOF "1/2.8" *SC3D_SENSOR_LIST*)))
-          (set_tile "res" (itoa (SC3D:INDEXOF "1920x1080 (2MP 16:9)" *SC3D_RES_LIST*)))
-          (set_tile "std" "0")
-          (set_tile "view" "0")
-          (set_tile "camname" "")
-          (set_tile "situation" "0")
-          (set_tile "focal" "5")
-          (set_tile "dist" "15")
-          (set_tile "camh" "4")
-          (set_tile "objh" "2.5")
-          (set_tile "grid" "0")
-          (set_tile "show_dist" "1")
-          (set_tile "trans" "60")
-          (set_tile "use_hatch" "0")
-          (SC3D:RAND-HATCH)
+
+        (set_tile "hatch_info"
+          (strcat "Motif : " *SC3D_CUR_HATCH_PAT* "  Couleur ACI : " (itoa *SC3D_CUR_HATCH_COL*))
+        )
+        (mode_tile "btn_regen" (if (= (get_tile "use_hatch") "1") 0 1))
+
+        (SC3D:CAM-DLG-APPLY)
+
+        (action_tile "source" "(SC3D:CAM-DLG-SOURCE-CHANGED)")
+        (action_tile "manu" "(SC3D:CAM-DLG-UPDATE-MODELS)")
+        (action_tile "model" "(SC3D:CAM-DLG-APPLY)")
+        (action_tile "use_hatch" "(SC3D:DLG-HATCH-UPDATE)")
+        (action_tile "btn_regen" "(SC3D:DLG-REGEN-HATCH)")
+        (action_tile "accept" "(SC3D:ACCEPT-DLG)")
+        (action_tile "apply" "(SC3D:APPLY-DLG)")
+        (action_tile "cancel" "(done_dialog 0)")
+        (action_tile "nav" "(SC3D:NAV-DLG)")
+
+        (setq st (start_dialog))
+        (cond
+          ((= st 1)
+            (setq result SC3D_DLG_RET)
+            (setq done T)
+          )
+          ((= st 2)
+            ;; "Voir le dessin" : navigation libre, puis la boucle rouvre la
+            ;; fenetre au meme endroit avec les valeurs saisies.
+            (setq state *SC3D_DLG_STATE*)
+            (setq pos *SC3D_DLG_POS*)
+            (SC3D:DLG-NAVIGATE)
+          )
+          (T
+            (setq result nil)
+            (setq done T)
+          )
         )
       )
-
-      (set_tile "hatch_info"
-        (strcat "Motif : " *SC3D_CUR_HATCH_PAT* "  Couleur ACI : " (itoa *SC3D_CUR_HATCH_COL*))
-      )
-      (mode_tile "btn_regen" (if (= (get_tile "use_hatch") "1") 0 1))
-
-      (SC3D:CAM-DLG-APPLY)
-
-      (action_tile "source" "(SC3D:CAM-DLG-SOURCE-CHANGED)")
-      (action_tile "manu" "(SC3D:CAM-DLG-UPDATE-MODELS)")
-      (action_tile "model" "(SC3D:CAM-DLG-APPLY)")
-      (action_tile "use_hatch" "(SC3D:DLG-HATCH-UPDATE)")
-      (action_tile "btn_regen" "(SC3D:DLG-REGEN-HATCH)")
-      (action_tile "accept" "(SC3D:ACCEPT-DLG)")
-      (action_tile "apply" "(SC3D:APPLY-DLG)")
-      (action_tile "cancel" "(done_dialog 0)")
-
-      (if (= (start_dialog) 1)
-        (setq result SC3D_DLG_RET)
-        (setq result nil)
-      )
-
-      (unload_dialog id)
-      (setq *SC3D_DLG_APPLY_FN* nil)
-      result
     )
   )
+
+  (unload_dialog id)
+  (setq *SC3D_DLG_APPLY_FN* nil)
+  result
 )
 
 (defun SC3D:LAYER (name color / ed)
@@ -8585,6 +8649,69 @@
   found
 )
 
+(defun SC3D:CV-NUMBER (name / s n i j found)
+  ;; Numero de camera "C<chiffres>" contenu dans le nom d'un champ de vision :
+  ;; H1-C01 -> 1, Q1_C03 -> 3, C04 -> 4. Le C ne doit pas suivre une lettre
+  ;; (SC1-C05 -> 5, pas 1) ; s'il y en a plusieurs, le dernier. nil si aucun.
+  (setq s (strcase name))
+  (setq n (strlen s))
+  (setq i 1)
+  (while (<= i n)
+    (if (and (= (substr s i 1) "C")
+             (< i n)
+             (wcmatch (substr s (+ i 1) 1) "#")
+             (or (= i 1) (not (wcmatch (substr s (- i 1) 1) "@"))))
+      (progn
+        (setq j (+ i 1))
+        (while (and (<= j n) (wcmatch (substr s j 1) "#"))
+          (setq j (+ j 1))
+        )
+        (setq found (atoi (substr s (+ i 1) (- j i 1))))
+        (setq i j)
+      )
+      (setq i (+ i 1))
+    )
+  )
+  found
+)
+
+(defun SC3D:SORT-EXPORT-GROUPS (groups / i keyed num)
+  ;; groups : liste (NOM . fiches) dans l'ordre de selection. Tri : numero de
+  ;; camera C<n> croissant (cf. SC3D:CV-NUMBER), puis les noms sans numero, puis
+  ;; les cameras sans nom ; a egalite, l'ordre de selection est conserve.
+  (setq i 0)
+  (setq keyed '())
+  (foreach g groups
+    (setq num (if (= (car g) "") nil (SC3D:CV-NUMBER (car g))))
+    (setq keyed
+      (cons
+        (list
+          (cond
+            (num (float num))
+            ((/= (car g) "") 1e15)
+            (T 2e15)
+          )
+          i
+          g
+        )
+        keyed
+      )
+    )
+    (setq i (+ i 1))
+  )
+  (setq keyed (reverse keyed))
+  ;; Ordre total (rang, puis indice) : vl-sort-i ne perd ni ne melange rien.
+  (mapcar
+    '(lambda (k) (nth 2 (nth k keyed)))
+    (vl-sort-i keyed
+      '(lambda (a b)
+        (or (< (car a) (car b))
+            (and (= (car a) (car b)) (< (cadr a) (cadr b))))
+      )
+    )
+  )
+)
+
 (defun SC3D:EXPORT-SINGLE (rec legendBox camMrg legendNamePos / base)
   (setq base (cdr (assoc 'name rec)))
   (if (or (null base) (= base ""))
@@ -8762,6 +8889,10 @@
               (setq groups (append groups (list (cons key (list r)))))
             )
           )
+
+          ;; Presentations creees (donc onglets) dans l'ordre du numero de
+          ;; camera C<n> du nom : H1-C01, Q1-C02, Q1_C03, C04...
+          (setq groups (SC3D:SORT-EXPORT-GROUPS groups))
 
           (foreach grp groups
             (setq key (car grp))
