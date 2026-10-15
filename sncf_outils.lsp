@@ -327,7 +327,9 @@
   (reverse lst)
 )
 
-(defun C:S_MAJ (/ dfsFiles resultFile rc updated p nb errorFile errTxt)
+(defun SMAJ:update-scripts (/ dfsFiles resultFile rc updated p nb errorFile errTxt)
+  ;; Mise a jour des scripts SNCF depuis GitHub (rechargement des fichiers mis
+  ;; a jour). Lancee seule au chargement (sans question), et par S_MAJ.
   (setq dfsFiles (SMAJ:find-appload-dfs))
   (setq resultFile (strcat (getenv "TEMP") "\\sncf_maj_updated.txt"))
   (setq errorFile (strcat (getenv "TEMP") "\\sncf_maj_error.txt"))
@@ -381,12 +383,12 @@
 )
 
 ;; ------------------------------------------------------------------------------------
-;; S_UPDATE : tout actualiser
+;; S_MAJ : tout actualiser
 ;;
-;; Met a jour les scripts SNCF (S_MAJ), puis chaque donnee que les modules ont
-;; inscrite avec SNCF:REGISTER-UPDATE (ex. liste des cameras GitHub, cf.
-;; C_S_CAMERA.lsp). *SNCF_UPDATE_HOOKS* (liste de (fonction . libelle)) n'est
-;; pas remise a zero au rechargement : les modules s'y reinscrivent sans doublon.
+;; Met a jour les scripts SNCF, puis chaque donnee que les modules ont inscrite
+;; avec SNCF:REGISTER-UPDATE (ex. liste des cameras GitHub, cf. C_S_CAMERA.lsp).
+;; *SNCF_UPDATE_HOOKS* (liste de (fonction . libelle)) n'est pas remise a zero
+;; au rechargement : les modules s'y reinscrivent sans doublon.
 ;; ------------------------------------------------------------------------------------
 
 (defun SNCF:REGISTER-UPDATE (fn label)
@@ -398,31 +400,39 @@
   )
 )
 
-(defun C:S_UPDATE (/ r h)
-  (princ "\n--- Scripts SNCF ---")
-  (setq r (vl-catch-all-apply 'C:S_MAJ nil))
+(defun C:S_MAJ (/ r h)
+  (princ "
+--- Scripts SNCF ---")
+  (setq r (vl-catch-all-apply 'SMAJ:update-scripts nil))
   (if (vl-catch-all-error-p r)
-    (princ (strcat "\nErreur : " (vl-catch-all-error-message r)))
+    (princ (strcat "
+Erreur : " (vl-catch-all-error-message r)))
   )
 
-  ;; Relu apres S_MAJ : si les scripts ont ete recharges, les modules se sont
-  ;; reinscrits avec leur nouvelle version.
+  ;; Relu apres la mise a jour des scripts : s'ils ont ete recharges, les
+  ;; modules se sont reinscrits avec leur nouvelle version.
   (foreach h *SNCF_UPDATE_HOOKS*
-    (princ (strcat "\n--- " (cdr h) " ---"))
+    (princ (strcat "
+--- " (cdr h) " ---"))
     (setq r (vl-catch-all-apply (car h) nil))
     (if (vl-catch-all-error-p r)
-      (princ (strcat "\nErreur : " (vl-catch-all-error-message r)))
+      (princ (strcat "
+Erreur : " (vl-catch-all-error-message r)))
     )
   )
 
-  (princ "\nActualisation terminee.")
+  (princ "
+Actualisation terminee.")
   (princ)
 )
 
+;; Au chargement : scripts seulement. Les autres donnees (liste des cameras
+;; GitHub...) sont deja chargees par leur module, et S_MAJ pose des questions
+;; (actualiser les champs de vision du dessin ?) a ne pas poser au demarrage.
 (if (not *SNCF_MAJ_AUTO_DONE*)
   (progn
     (setq *SNCF_MAJ_AUTO_DONE* T)
-    (vl-catch-all-apply 'C:S_MAJ)
+    (vl-catch-all-apply 'SMAJ:update-scripts)
   )
 )
 
@@ -2489,8 +2499,8 @@
 )
 
 ;; *SC3D_GITHUB_CAMERAS_FETCHED* / *SC3D_GITHUB_CAMERAS_OK* ne sont pas remis a
-;; zero au rechargement du script (S_MAJ, S_UPDATE) : la liste deja telechargee
-;; dans la session reste valable, et S_UPDATE la retelecharge explicitement
+;; zero au rechargement du script (S_MAJ) : la liste deja telechargee dans la
+;; session reste valable, et S_MAJ la retelecharge explicitement
 ;; (cf. SC3D:REFRESH-GITHUB-CAMERAS).
 
 (defun SC3D:ENSURE-GITHUB-CAMERAS ()
@@ -2510,7 +2520,7 @@
 
 (defun SC3D:REFRESH-GITHUB-CAMERAS (/ dst tmp ok)
   ;; Retelecharge la liste GitHub meme si elle l'a deja ete dans la session
-  ;; (commande S_UPDATE). Telechargee dans un fichier a part, qui ne remplace
+  ;; (commande S_MAJ). Telechargee dans un fichier a part, qui ne remplace
   ;; l'ancienne liste qu'en cas de succes : sans reseau, la liste deja
   ;; telechargee reste utilisable. Renvoie T si la liste a ete mise a jour.
   (setq dst (SC3D:GITHUB-CFG-PATH))
@@ -2531,7 +2541,7 @@
 )
 
 (defun SC3D:UPDATE-HOOK (/ ok n ents ch r)
-  ;; Partie camera de S_UPDATE (cf. SNCF:REGISTER-UPDATE dans F_MAJ.lsp) :
+  ;; Partie camera de S_MAJ (cf. SNCF:REGISTER-UPDATE dans F_MAJ.lsp) :
   ;; liste des cameras GitHub retelechargee, puis, si le dessin contient des
   ;; champs de vision, proposition de les actualiser tous (angles relus dans la
   ;; liste a jour, une hachure par zone...). Non par defaut : cela modifie le
@@ -2579,7 +2589,7 @@
   (princ)
 )
 
-;; Inscription dans S_UPDATE (F_MAJ.lsp, charge avant les commandes).
+;; Inscription dans S_MAJ (F_MAJ.lsp, charge avant les commandes).
 (if SNCF:REGISTER-UPDATE
   (SNCF:REGISTER-UPDATE 'SC3D:UPDATE-HOOK "Cameras")
 )
