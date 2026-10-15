@@ -2804,11 +2804,37 @@
   )
 )
 
+(defun SC3D:DCL-FIELD (lblW label tiles)
+  ;; Ligne DCL "libelle + controle(s)" avec un libelle de largeur fixe : dans un
+  ;; cadre, tous les champs commencent a la meme abscisse, quel que soit le
+  ;; moteur DCL (l'alignement automatique des edit_box/popup_list n'est pas
+  ;; garanti sous BricsCAD).
+  (strcat
+    ": row { : text { label = \"" label "\"; width = " (itoa lblW) "; fixed_width = true; } "
+    tiles
+    " }"
+  )
+)
+
+(defun SC3D:DCL-POPUP (key w)
+  (strcat ": popup_list { key = \"" key "\"; width = " (itoa w) "; fixed_width = true; }")
+)
+
+(defun SC3D:DCL-EDIT (key w unit)
+  ;; Champ de saisie sans libelle (cf. SC3D:DCL-FIELD), suivi de son unite.
+  (strcat
+    ": edit_box { key = \"" key "\"; edit_width = " (itoa w) "; fixed_width = true; }"
+    (if unit (strcat " : text { label = \"" unit "\"; width = 3; fixed_width = true; }") "")
+  )
+)
+
 (defun SC3D:WRITE-CAM-DIALOG (f name title)
   ;; Ecrit dans le fichier DCL f la boite Creer/Modifier, sous le nom name et
-  ;; le titre title. Deux colonnes : camera et champ de vision a gauche,
-  ;; implantation et affichage a droite (fenetre moins haute que l'ancienne
-  ;; colonne unique) ; dans chaque cadre les champs de saisie sont alignes.
+  ;; le titre title.
+  ;; Ordre de saisie (= ordre de la touche Tab) : d'abord ce qui change a chaque
+  ;; camera (nom, situation, vue, implantation) a gauche, puis le materiel
+  ;; (fabricant, modele, focale - plage autorisee affichee a cote -, capteur,
+  ;; resolution) a droite, l'affichage en bas.
   (foreach l
     (list
       (strcat name " : dialog {")
@@ -2816,45 +2842,43 @@
       "  : row {"
       "    : column {"
       "      : boxed_column {"
-      "        label = \"Camera\";"
-      "        : popup_list { key = \"source\"; label = \"Source\"; edit_width = 30; }"
-      "        : popup_list { key = \"manu\"; label = \"Fabricant\"; edit_width = 30; }"
-      "        : popup_list { key = \"model\"; label = \"Modele\"; edit_width = 30; }"
-      "        : text { key = \"caminfo\"; label = \"\"; width = 46; }"
-      "        : text { key = \"caminfo2\"; label = \"\"; width = 46; }"
-      "      }"
-      "      : boxed_column {"
-      "        label = \"Optique et resolution\";"
-      "        : popup_list { key = \"fmt\"; label = \"Capteur\"; edit_width = 30; }"
-      "        : popup_list { key = \"res\"; label = \"Resolution\"; edit_width = 30; }"
-      "        : edit_box { key = \"focal\"; label = \"Focale (mm)\"; edit_width = 10; fixed_width = true; }"
-      "      }"
-      "      : boxed_column {"
       "        label = \"Champ de vision\";"
-      "        : edit_box { key = \"camname\"; label = \"Nom (ex. Q1-C03)\"; edit_width = 30; }"
-      "        : popup_list { key = \"situation\"; label = \"Situation\"; edit_width = 30; }"
-      "        : popup_list { key = \"view\"; label = \"Vue\"; edit_width = 30; }"
+      (strcat "        " (SC3D:DCL-FIELD 17 "Nom" (SC3D:DCL-EDIT "camname" 24 nil)))
+      (strcat "        " (SC3D:DCL-FIELD 17 "Situation" (SC3D:DCL-POPUP "situation" 26)))
+      (strcat "        " (SC3D:DCL-FIELD 17 "Vue" (SC3D:DCL-POPUP "view" 26)))
       "      }"
-      "    }"
-      "    : column {"
       "      : boxed_column {"
       "        label = \"Implantation\";"
-      "        : edit_box { key = \"dist\"; label = \"Distance max (m)\"; edit_width = 10; fixed_width = true; }"
-      "        : edit_box { key = \"camh\"; label = \"Hauteur camera (m)\"; edit_width = 10; fixed_width = true; }"
-      "        : edit_box { key = \"objh\"; label = \"Hauteur objectif (m)\"; edit_width = 10; fixed_width = true; }"
-      "        : popup_list { key = \"std\"; label = \"Norme DORI\"; edit_width = 10; fixed_width = true; }"
+      (strcat "        " (SC3D:DCL-FIELD 17 "Distance max" (SC3D:DCL-EDIT "dist" 8 "m")))
+      (strcat "        " (SC3D:DCL-FIELD 17 "Hauteur caméra" (SC3D:DCL-EDIT "camh" 8 "m")))
+      (strcat "        " (SC3D:DCL-FIELD 17 "Hauteur objectif" (SC3D:DCL-EDIT "objh" 8 "m")))
+      (strcat "        " (SC3D:DCL-FIELD 17 "Norme DORI" (SC3D:DCL-POPUP "std" 12)))
       "      }"
-      "      : boxed_column {"
-      "        label = \"Affichage\";"
-      "        : edit_box { key = \"trans\"; label = \"Transparence (0-90 %)\"; edit_width = 10; fixed_width = true; }"
-      "        : toggle { key = \"grid\"; label = \"Afficher la grille\"; }"
-      "        : toggle { key = \"show_dist\"; label = \"Afficher les metres dans l'axe\"; }"
-      "        : toggle { key = \"use_hatch\"; label = \"Hachure unique (au lieu des zones PPM)\"; }"
-      "        : row {"
-      "          : text { key = \"hatch_info\"; label = \"\"; width = 30; }"
-      "          : button { key = \"btn_regen\"; label = \"Generer\"; width = 10; fixed_width = true; }"
-      "        }"
-      "      }"
+      "    }"
+      "    : boxed_column {"
+      "      label = \"Caméra\";"
+      (strcat "      " (SC3D:DCL-FIELD 12 "Fabricant" (SC3D:DCL-POPUP "manu" 36)))
+      (strcat "      " (SC3D:DCL-FIELD 12 "Modèle" (SC3D:DCL-POPUP "model" 36)))
+      (strcat "      " (SC3D:DCL-FIELD 12 "Focale"
+        (strcat (SC3D:DCL-EDIT "focal" 8 "mm") " : text { key = \"focrange\"; label = \"\"; width = 24; }")))
+      (strcat "      " (SC3D:DCL-FIELD 12 "Capteur" (SC3D:DCL-POPUP "fmt" 36)))
+      (strcat "      " (SC3D:DCL-FIELD 12 "Résolution" (SC3D:DCL-POPUP "res" 36)))
+      (strcat "      " (SC3D:DCL-FIELD 12 "" ": text { key = \"caminfo2\"; label = \"\"; width = 36; }"))
+      "      : spacer { height = 0.5; }"
+      (strcat "      " (SC3D:DCL-FIELD 12 "Source" (SC3D:DCL-POPUP "source" 36)))
+      "    }"
+      "  }"
+      "  : boxed_column {"
+      "    label = \"Affichage\";"
+      "    : row {"
+      (strcat "      " (SC3D:DCL-FIELD 13 "Transparence" (SC3D:DCL-EDIT "trans" 5 "%")))
+      "      : toggle { key = \"grid\"; label = \"Grille\"; }"
+      "      : toggle { key = \"show_dist\"; label = \"Mètres dans l'axe\"; }"
+      "    }"
+      "    : row {"
+      "      : toggle { key = \"use_hatch\"; label = \"Hachure unique (au lieu des zones PPM)\"; }"
+      "      : text { key = \"hatch_info\"; label = \"\"; width = 26; }"
+      "      : button { key = \"btn_regen\"; label = \"Générer\"; width = 11; fixed_width = true; }"
       "    }"
       "  }"
       "  : errtile { key = \"msg\"; }"
@@ -2883,8 +2907,8 @@
 (defun SC3D:MAKE-DCL (/ fn f)
   (setq fn (strcat (getvar "TEMPPREFIX") "sc3d_camera_jvsg.dcl"))
   (setq f (open fn "w"))
-  (SC3D:WRITE-CAM-DIALOG f "sc3d_dialog_new" "SNCF - Nouveau champ de vision camera")
-  (SC3D:WRITE-CAM-DIALOG f "sc3d_dialog_mod" "SNCF - Modifier le champ de vision camera")
+  (SC3D:WRITE-CAM-DIALOG f "sc3d_dialog_new" "SNCF - Nouveau champ de vision caméra")
+  (SC3D:WRITE-CAM-DIALOG f "sc3d_dialog_mod" "SNCF - Modifier le champ de vision caméra")
   (close f)
   fn
 )
@@ -2904,11 +2928,13 @@
   )
 )
 
+(defun SC3D:HATCH-INFO-TEXT ()
+  (strcat "Motif " *SC3D_CUR_HATCH_PAT* ", couleur " (itoa *SC3D_CUR_HATCH_COL*))
+)
+
 (defun SC3D:DLG-REGEN-HATCH ()
   (SC3D:RAND-HATCH)
-  (set_tile "hatch_info"
-    (strcat "Motif : " *SC3D_CUR_HATCH_PAT* "  Couleur ACI : " (itoa *SC3D_CUR_HATCH_COL*))
-  )
+  (set_tile "hatch_info" (SC3D:HATCH-INFO-TEXT))
 )
 
 (defun SC3D:SET-POPUP-LIST (key lst val)
@@ -2977,26 +3003,26 @@
           (mode_tile "fmt" 1)
           (mode_tile "res" 1)
 
-          ;; Sur deux lignes : la colonne est plus etroite que l'ancienne fenetre.
-          (set_tile "caminfo"
-            (strcat "Focale de " (rtos fmin 2 1) " a " (rtos fmax 2 1) " mm")
+          ;; Plage autorisee juste a cote du champ Focale, angles sous la resolution.
+          (set_tile "focrange"
+            (strcat "de " (rtos fmin 2 1) " à " (rtos fmax 2 1) " mm")
           )
           (set_tile "caminfo2"
             (strcat
-              "Angle H "
+              "Angles H "
               (rtos (cdr (assoc 'hmax cam)) 2 1)
-              " a "
+              "° à "
               (rtos (cdr (assoc 'hmin cam)) 2 1)
-              " deg / V "
+              "°, V "
               (rtos (cdr (assoc 'vmax cam)) 2 1)
-              " a "
+              "° à "
               (rtos (cdr (assoc 'vmin cam)) 2 1)
-              " deg"
+              "°"
             )
           )
         )
         (progn
-          (set_tile "caminfo" "")
+          (set_tile "focrange" "")
           (set_tile "caminfo2" "")
         )
       )
@@ -3004,8 +3030,8 @@
     (progn
       (mode_tile "fmt" 0)
       (mode_tile "res" 0)
-      (set_tile "caminfo" "Mode manuel :")
-      (set_tile "caminfo2" "capteur, resolution et focale libres.")
+      (set_tile "focrange" "libre")
+      (set_tile "caminfo2" "Mode manuel : capteur et résolution libres.")
     )
   )
 )
@@ -3268,12 +3294,16 @@
           )
         )
 
-        (set_tile "hatch_info"
-          (strcat "Motif : " *SC3D_CUR_HATCH_PAT* "  Couleur ACI : " (itoa *SC3D_CUR_HATCH_COL*))
-        )
+        (set_tile "hatch_info" (SC3D:HATCH-INFO-TEXT))
         (mode_tile "btn_regen" (if (= (get_tile "use_hatch") "1") 0 1))
 
         (SC3D:CAM-DLG-APPLY)
+
+        ;; Saisie rapide : curseur dans le premier champ a renseigner, texte
+        ;; selectionne (la frappe le remplace), Entree = OK. Nouvelle camera :
+        ;; le nom (propose d'apres la precedente) ; modification : la focale.
+        (mode_tile (if applyFn "focal" "camname") 2)
+        (mode_tile (if applyFn "focal" "camname") 3)
 
         (action_tile "source" "(SC3D:CAM-DLG-SOURCE-CHANGED)")
         (action_tile "manu" "(SC3D:CAM-DLG-UPDATE-MODELS)")
@@ -5623,13 +5653,39 @@
   (SC3D:RTD (SC3D:UCS-ANG->WCS (if a a 0.0)))
 )
 
+(defun SC3D:REMEMBER-NEW-CAMERA (vals)
+  ;; Valeurs de la camera qui vient d'etre creee, reprises pour la suivante
+  ;; (cf. SC3D:NEW-CAMERA-DEFAULTS) : memorisees hors du dessin (meme format
+  ;; que la configuration en xdata), donc aussi d'une session a l'autre.
+  (vl-catch-all-apply 'setenv (list "SC3D_LAST_CAMERA" (SC3D:CFG-STR vals "")))
+)
+
+(defun SC3D:NEW-CAMERA-DEFAULTS (/ s vals)
+  ;; Valeurs proposees pour une nouvelle camera : celles de la derniere creee,
+  ;; avec le nom suivant (Q1-C03 -> Q1-C04), un nouveau motif de hachure et la
+  ;; camera visible. nil (valeurs par defaut de la boite) si aucune.
+  (setq s (vl-catch-all-apply 'getenv (list "SC3D_LAST_CAMERA")))
+  (if (and s (not (vl-catch-all-error-p s)) (/= s "") (setq vals (SC3D:CFG-VALS s)))
+    (progn
+      (SC3D:RAND-HATCH)
+      (setq vals (SC3D:SETVAL vals 'hatch_pattern *SC3D_CUR_HATCH_PAT*))
+      (setq vals (SC3D:SETVAL vals 'hatch_color *SC3D_CUR_HATCH_COL*))
+      (setq vals (SC3D:SETVAL vals 'hidden nil))
+      (setq vals (SC3D:SETVAL vals 'cvname (SC3D:NEXT-CV-NAME-SUGGEST (cdr (assoc 'cvname vals)))))
+      vals
+    )
+    nil
+  )
+)
+
 (defun SC3D:CMD-CREER (/ vals base rot)
-  (setq vals (SC3D:DIALOG nil nil))
+  (setq vals (SC3D:DIALOG (SC3D:NEW-CAMERA-DEFAULTS) nil))
 
   (if vals
     (progn
       (setq rot (SC3D:ASK-ROTATION))
       (setq vals (SC3D:SETVAL vals 'rot rot))
+      (SC3D:REMEMBER-NEW-CAMERA vals)
 
       (setq base (getpoint "\nPoint d'insertion de la camera : "))
       (if base
@@ -8723,10 +8779,11 @@
   found
 )
 
-(defun SC3D:CV-NUMBER (name / s n i j found)
-  ;; Numero de camera "C<chiffres>" contenu dans le nom d'un champ de vision :
-  ;; H1-C01 -> 1, Q1_C03 -> 3, C04 -> 4. Le C ne doit pas suivre une lettre
-  ;; (SC1-C05 -> 5, pas 1) ; s'il y en a plusieurs, le dernier. nil si aucun.
+(defun SC3D:CV-NUMBER-SPAN (name / s n i j found)
+  ;; Position des chiffres du numero de camera "C<chiffres>" d'un nom de champ
+  ;; de vision : (debut fin), positions au sens de substr, fin exclue. Le C ne
+  ;; doit pas suivre une lettre (SC1-C05 -> C05, pas C1) ; s'il y en a
+  ;; plusieurs, le dernier. nil si aucun.
   (setq s (strcase name))
   (setq n (strlen s))
   (setq i 1)
@@ -8740,13 +8797,38 @@
         (while (and (<= j n) (wcmatch (substr s j 1) "#"))
           (setq j (+ j 1))
         )
-        (setq found (atoi (substr s (+ i 1) (- j i 1))))
+        (setq found (list (+ i 1) j))
         (setq i j)
       )
       (setq i (+ i 1))
     )
   )
   found
+)
+
+(defun SC3D:CV-NUMBER (name / sp)
+  ;; Numero de camera du nom : H1-C01 -> 1, Q1_C03 -> 3, C04 -> 4. nil si aucun.
+  (if (setq sp (SC3D:CV-NUMBER-SPAN name))
+    (atoi (substr name (car sp) (- (cadr sp) (car sp))))
+    nil
+  )
+)
+
+(defun SC3D:NEXT-CV-NAME-SUGGEST (name / sp digits num)
+  ;; Nom propose pour la camera suivante : numero C<n> du nom precedent + 1, en
+  ;; gardant le nombre de chiffres (Q1-C03 -> Q1-C04, C09 -> C10). Sans numero :
+  ;; le meme nom (paire existante / projetee).
+  (if (and name (setq sp (SC3D:CV-NUMBER-SPAN name)))
+    (progn
+      (setq digits (substr name (car sp) (- (cadr sp) (car sp))))
+      (setq num (itoa (+ (atoi digits) 1)))
+      (while (< (strlen num) (strlen digits))
+        (setq num (strcat "0" num))
+      )
+      (strcat (substr name 1 (- (car sp) 1)) num (substr name (cadr sp)))
+    )
+    (if name name "")
+  )
 )
 
 (defun SC3D:SORT-EXPORT-GROUPS (groups / i keyed num)
