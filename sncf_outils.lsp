@@ -2813,14 +2813,14 @@
   (write-line "    }" f)
 
   (write-line "    : errtile { key = \"msg\"; }" f)
+  ;; "Voir le dessin" sur sa propre ligne, au-dessus des boutons OK / Appliquer / Annuler.
+  (write-line "    : button { key = \"nav\"; label = \"Voir le dessin\"; fixed_width = true; width = 30; alignment = centered; }" f)
   (write-line "    : row {" f)
   (write-line "      fixed_width = true;" f)
   (write-line "      alignment = centered;" f)
   (write-line "      : retirement_button { key = \"accept\"; label = \"OK\"; is_default = true; fixed_width = true; width = 10; }" f)
   (write-line "      spacer;" f)
   (write-line "      : retirement_button { key = \"apply\"; label = \"Appliquer\"; fixed_width = true; width = 12; }" f)
-  (write-line "      spacer;" f)
-  (write-line "      : button { key = \"nav\"; label = \"Voir le dessin\"; fixed_width = true; width = 26; }" f)
   (write-line "      spacer;" f)
   (write-line "      : retirement_button { key = \"cancel\"; label = \"Annuler\"; is_cancel = true; fixed_width = true; width = 10; }" f)
   (write-line "    }" f)
