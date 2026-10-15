@@ -1,6 +1,6 @@
 ﻿(vl-load-com)
 (setq *SCRIPT_ID* "SNCF_Outils")
-(setq *S_SCRIPT_VERSION* "0.3")
+(setq *S_SCRIPT_VERSION* "3.5")
 (princ (strcat "\nInformation: Script Outils SNCF développé par Dawson AILLAUD - SNCF Réseau TL MOB - Version " *S_SCRIPT_VERSION*))
 
 ;; ------------------------------------------------------------------------------------ F_MAJ ------------------------------------------------------------------------------------
