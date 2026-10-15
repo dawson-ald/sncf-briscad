@@ -2078,8 +2078,7 @@ Actualisation terminee.")
 ;; "Appliquer" (cf. SC3D:DIALOG / SC3D:APPLY-DLG / SC3D:MODIFY-APPLY) :
 ;; callback a invoquer sur "Appliquer", et pour la modification d'une camera
 ;; existante, l'entite et le contexte (position/rotation/visibilite/ajustement)
-;; a conserver a chaque application sans fermer la fenetre. L'ajustement y est
-;; garde sous sa forme de reference (active refD pts), cf. SC3D:GET-CLIP-REF.
+;; a conserver a chaque application sans fermer la fenetre.
 (setq *SC3D_DLG_APPLY_FN* nil)
 (setq *SC3D_MODIFY_ENTITY* nil)
 (setq *SC3D_MODIFY_BASE* nil)
@@ -5731,15 +5730,9 @@ Actualisation terminee.")
   )
 
   ;; Reappliquer l'ajustement (polygone de decoupe) existant : sinon chaque
-  ;; "Appliquer" ferait disparaitre l'ajustement en place. Il est recale sur la
-  ;; nouvelle distance max a partir de sa reference (cf. SC3D:CLIP-FOLLOW-DIST).
+  ;; "Appliquer" ferait disparaitre l'ajustement en place.
   (if *SC3D_MODIFY_CLIP*
-    (SC3D:APPLY-CLIP-REF
-      *SC3D_MODIFY_ENTITY*
-      (car *SC3D_MODIFY_CLIP*)
-      (cadr *SC3D_MODIFY_CLIP*)
-      (caddr *SC3D_MODIFY_CLIP*)
-    )
+    (SC3D:APPLY-CLIP *SC3D_MODIFY_ENTITY* (car *SC3D_MODIFY_CLIP*) (cdr *SC3D_MODIFY_CLIP*))
   )
   *SC3D_MODIFY_ENTITY*
 )
@@ -5783,15 +5776,7 @@ Actualisation terminee.")
               ;; Recuperer l'ajustement (polygone de decoupe) existant avant de
               ;; detruire le bloc, pour le reappliquer sur le nouveau bloc cree :
               ;; sinon "Modifier" fait disparaitre l'ajustement en place.
-              ;; C'est l'ajustement de reference qui est conserve : chaque
-              ;; "Appliquer" le recale sur la distance max saisie, et revenir a
-              ;; la distance de reference redonne l'ajustement d'origine.
-              (setq clip (SC3D:GET-CLIP-REF e))
-              ;; Ajustement sans distance de reference (trace avec une version
-              ;; precedente) : il correspond a la distance max actuelle.
-              (if (and clip (not (cadr clip)))
-                (setq clip (list (car clip) (cdr (assoc 'dist oldVals)) (caddr clip)))
-              )
+              (setq clip (SC3D:GET-CLIP-XDATA e))
 
               ;; Contexte partage avec SC3D:MODIFY-APPLY : le bouton "Appliquer"
               ;; de la boite de dialogue recree l'entite courante a chaque clic
@@ -6350,20 +6335,11 @@ Actualisation terminee.")
   out
 )
 
-;; Le polygone stocke est l'ajustement de REFERENCE, tel que dessine, avec la
-;; distance max de la camera au moment du trace (1040). Le decoupage reellement
-;; applique en est deduit pour la distance max actuelle (cf. SC3D:CLIP-FOLLOW-DIST) :
-;; modifier la distance max recale l'ajustement sur le nouveau champ de vision,
-;; et revenir a la distance de reference redonne exactement l'ajustement trace.
-
-(defun SC3D:SET-CLIP-XDATA (e active refD pts / s chunks lst c)
+(defun SC3D:SET-CLIP-XDATA (e active pts / s chunks lst c)
   (SC3D:REGAPP-CLIP)
   (setq s (SC3D:CLIP-PTS->STRING pts))
   (setq chunks (SC3D:STRING-CHUNKS s 200))
   (setq lst (list *SC3D_CLIP_APP* (cons 1070 (if active 1 0))))
-  (if refD
-    (setq lst (append lst (list (cons 1040 refD))))
-  )
   (foreach c chunks
     (setq lst (append lst (list (cons 1000 c))))
   )
@@ -6371,11 +6347,7 @@ Actualisation terminee.")
   (entupd e)
 )
 
-(defun SC3D:GET-CLIP-REF (e / xd entry active refD chunks x pts)
-  ;; Ajustement de reference stocke : (active refD pts), nil si aucun.
-  ;; refD = nil pour un ajustement trace avant la memorisation de la distance
-  ;; de reference : il est alors considere comme trace pour la distance max
-  ;; actuelle de la camera.
+(defun SC3D:GET-CLIP-XDATA (e / xd entry active chunks x pts)
   (setq xd (cdr (assoc -3 (entget e (list *SC3D_CLIP_APP*)))))
   (if xd
     (progn
@@ -6383,90 +6355,21 @@ Actualisation terminee.")
       (if entry
         (progn
           (setq active nil)
-          (setq refD nil)
           (setq chunks "")
           (foreach x (cdr entry)
             (cond
               ((= (car x) 1070) (setq active (= (cdr x) 1)))
-              ((= (car x) 1040) (setq refD (cdr x)))
               ((= (car x) 1000) (setq chunks (strcat chunks (cdr x))))
             )
           )
           (setq pts (SC3D:CLIP-STRING->PTS chunks))
           (if (>= (length pts) 3)
-            (list active refD pts)
+            (cons active pts)
             nil
           )
         )
         nil
       )
-    )
-    nil
-  )
-)
-
-(defun SC3D:CLIP-FOV-HALF-WIDTH (d vals calc / camH objH vHalf)
-  ;; Demi-largeur du cone vue du dessus a son extremite, pour une distance max d
-  ;; et les autres reglages de vals : l'inclinaison depend de la distance max,
-  ;; recalculee comme dans SC3D:CALC (tanH et vAng n'en dependent pas).
-  (setq camH (cdr (assoc 'camh vals)))
-  (setq objH (cdr (assoc 'objh vals)))
-  (setq vHalf (/ (SC3D:DTR (cdr (assoc 'vAng calc))) 2.0))
-  (SC3D:HALF-WIDTH-JVSG d (cdr (assoc 'tanH calc)) (+ (atan (/ (- camH objH) d)) vHalf) camH objH)
-)
-
-(defun SC3D:CLIP-FOLLOW-DIST (pts refD vals calc / curD kx ky w0)
-  ;; Ajustement pts (coordonnees locales du bloc), trace pour la distance max
-  ;; refD, recale sur la distance max actuelle de vals par une mise a l'echelle
-  ;; depuis la camera :
-  ;; - vue du dessus : le cone (triangle camera -> extremite) de refD est envoye
-  ;;   exactement sur celui de la distance actuelle (x selon les distances, y
-  ;;   selon les largeurs d'extremite) : l'ajustement garde la meme position
-  ;;   relative dans le champ de vision ;
-  ;; - vue de cote : x selon les distances, hauteurs inchangees (sol, hauteur
-  ;;   camera et hauteur objet ne dependent pas de la distance max).
-  ;; Transformation lineaire : un polygone simple le reste. pts inchange si la
-  ;; distance n'a pas change (ou refD inconnue). calc = (SC3D:CALC vals), ou nil.
-  (setq curD (cdr (assoc 'dist vals)))
-  (if (and pts refD curD (> refD 0.0) (> curD 0.0) (not (equal refD curD 1e-9)))
-    (progn
-      (setq kx (/ curD refD))
-      (setq ky 1.0)
-      (if (/= (cdr (assoc 'view vals)) "SIDE")
-        (progn
-          (if (not calc) (setq calc (SC3D:CALC vals)))
-          (setq w0 (SC3D:CLIP-FOV-HALF-WIDTH refD vals calc))
-          (setq ky
-            (if (> w0 1e-9)
-              (/ (SC3D:CLIP-FOV-HALF-WIDTH curD vals calc) w0)
-              kx
-            )
-          )
-        )
-      )
-      (mapcar '(lambda (p) (list (* (car p) kx) (* (cadr p) ky))) pts)
-    )
-    pts
-  )
-)
-
-(defun SC3D:GET-CLIP-XDATA (e / ref pts cfg vals)
-  ;; Ajustement effectif : (active . pts), pts recale sur la distance max
-  ;; actuelle de la camera ; nil si aucun ajustement.
-  (setq ref (SC3D:GET-CLIP-REF e))
-  (if ref
-    (progn
-      (setq pts (caddr ref))
-      (if (cadr ref)
-        (progn
-          (setq cfg (SC3D:GET-XDATA e))
-          (setq vals (if cfg (SC3D:CFG-VALS cfg) nil))
-          (if vals
-            (setq pts (SC3D:CLIP-FOLLOW-DIST pts (cadr ref) vals nil))
-          )
-        )
-      )
-      (cons (car ref) pts)
     )
     nil
   )
@@ -6494,18 +6397,9 @@ Actualisation terminee.")
   out
 )
 
-(defun SC3D:APPLY-CLIP (e active localPts)
-  ;; Nouvel ajustement localPts, trace pour la distance max actuelle de la
-  ;; camera, qui en devient la distance de reference.
-  (SC3D:APPLY-CLIP-REF e active nil localPts)
-)
-
-(defun SC3D:APPLY-CLIP-REF (e active refD refPts / ed blockName cfg vals calc view)
+(defun SC3D:APPLY-CLIP (e active localPts / ed blockName cfg vals calc view)
   ;; Regenere la geometrie du bloc camera (meme nom de bloc = redefinition en
-  ;; place) avec ou sans decoupe, sans jamais appeler XCLIP. refPts : ajustement
-  ;; de reference, trace pour la distance max refD (nil = distance max actuelle) ;
-  ;; la decoupe appliquee en est deduite pour la distance max actuelle
-  ;; (cf. SC3D:CLIP-FOLLOW-DIST).
+  ;; place) avec ou sans decoupe par localPts, sans jamais appeler XCLIP.
   (SC3D:LAYER "SC3D_AJUSTEMENT" 30)
   (setq ed (entget e))
   (setq blockName (cdr (assoc 2 ed)))
@@ -6518,14 +6412,11 @@ Actualisation terminee.")
       nil
     )
     (progn
-      (if (not refD) (setq refD (cdr (assoc 'dist vals))))
       (setq calc (SC3D:CALC vals))
       (setq view (cdr (assoc 'view vals)))
       (SC3D:USE-CAMERA-LAYER vals)
 
-      (setq *SC3D_CLIP_POLY*
-        (if active (SC3D:CLIP-DEDUPE (SC3D:CLIP-FOLLOW-DIST refPts refD vals calc)) nil)
-      )
+      (setq *SC3D_CLIP_POLY* (if active (SC3D:CLIP-DEDUPE localPts) nil))
       (setq *SC3D_CLIP_TRIS*
         (if *SC3D_CLIP_POLY* (SC3D:EAR-CLIP-TRIANGULATE *SC3D_CLIP_POLY*) nil)
       )
@@ -6538,8 +6429,8 @@ Actualisation terminee.")
       (setq *SC3D_CLIP_POLY* nil)
       (setq *SC3D_CLIP_TRIS* nil)
 
-      (if refPts
-        (SC3D:SET-CLIP-XDATA e active refD refPts)
+      (if localPts
+        (SC3D:SET-CLIP-XDATA e active localPts)
         (SC3D:CLEAR-CLIP-XDATA e)
       )
 
@@ -6718,21 +6609,19 @@ Actualisation terminee.")
             )
           )
         )
-        ;; Afficher/Masquer conservent l'ajustement de reference et sa distance
-        ;; tels quels (cf. SC3D:GET-CLIP-REF).
         ((= choix "Afficher")
-          (setq stored (SC3D:GET-CLIP-REF e))
+          (setq stored (SC3D:GET-CLIP-XDATA e))
           (if stored
-            (if (SC3D:APPLY-CLIP-REF e T (cadr stored) (caddr stored))
+            (if (SC3D:APPLY-CLIP e T (cdr stored))
               (princ "\nAjustement affiche : le champ de vision est decoupe.")
             )
             (princ "\nAucun ajustement defini pour cette camera.")
           )
         )
         ((= choix "Masquer")
-          (setq stored (SC3D:GET-CLIP-REF e))
+          (setq stored (SC3D:GET-CLIP-XDATA e))
           (if stored
-            (if (SC3D:APPLY-CLIP-REF e nil (cadr stored) (caddr stored))
+            (if (SC3D:APPLY-CLIP e nil (cdr stored))
               (princ "\nAjustement masque : le champ de vision complet est visible.")
             )
             (princ "\nAucun ajustement defini pour cette camera.")
