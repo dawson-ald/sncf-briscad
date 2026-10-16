@@ -3,6 +3,8 @@
 (setq *S_SCRIPT_VERSION* "0.35")
 (princ (strcat "\nInformation: Script Outils SNCF développé par Dawson AILLAUD - SNCF Réseau TL MOB - Version " *S_SCRIPT_VERSION*))
 
+(setq *SNCF_DEV* nil)
+
 ;; ------------------------------------------------------------------------------------ F_MAJ ------------------------------------------------------------------------------------
 
 (defun SMAJ:read-file (path / f line txt)
@@ -125,7 +127,9 @@
   s
 )
 
-(defun SMAJ:run-powershell-update (dfsFiles resultFile / psFile ps f shell rc dfsList errorFile)
+;; includeDev : nil = les builds locaux (compile.py) sont laisses tels quels,
+;; T = ils sont aussi remplaces par la version GitHub.
+(defun SMAJ:run-powershell-update (dfsFiles resultFile includeDev / psFile ps f shell rc dfsList errorFile)
   (setq psFile (strcat (getenv "TEMP") "\\sncf_maj_update.ps1"))
   (setq errorFile (strcat (getenv "TEMP") "\\sncf_maj_error.txt"))
   (setq dfsList (SMAJ:make-ps-list dfsFiles))
@@ -155,6 +159,7 @@
       "$resultFile = '" (SMAJ:replace-all resultFile "'" "''") "'\n"
       "$errorFile = '" (SMAJ:replace-all errorFile "'" "''") "'\n"
       "$dfsFiles = " dfsList "\n"
+      "$includeDev = " (if includeDev "$true" "$false") "\n"
 
       "function Read-TextAny($p) {\n"
       "  try { return [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) } catch {}\n"
@@ -167,6 +172,14 @@
       "  if ([string]::IsNullOrWhiteSpace($txt)) { return $false }\n"
       "  $clean = $txt.ToUpper() -replace '\\s+', ''\n"
       "  return ($clean.Contains('*SCRIPT_ID*') -and $clean.Contains('SNCF_OUTILS'))\n"
+      "}\n"
+
+      ;; Repere ecrit par compile.py, coupe en deux pour que ce script (present
+      ;; dans tous les builds) ne le contienne pas lui-meme.
+      "function Is-DevBuild($txt) {\n"
+      "  if ([string]::IsNullOrWhiteSpace($txt)) { return $false }\n"
+      "  $clean = $txt.ToUpper() -replace '\\s+', ''\n"
+      "  return $clean.Contains('(SETQ*SNCF_DEV*' + 'T)')\n"
       "}\n"
 
       "function Normalize-PathText($p) {\n"
@@ -255,6 +268,7 @@
       "    $oldTxt = Read-TextAny $p\n"
 
       "    if (Is-SncfScript $oldTxt) {\n"
+      "      if (-not $includeDev -and (Is-DevBuild $oldTxt)) { continue }\n"
       "      [System.IO.File]::WriteAllText($p, $newTxt, [System.Text.Encoding]::UTF8)\n"
 
       "      if (-not $updated.Contains($p)) {\n"
@@ -327,9 +341,10 @@
   (reverse lst)
 )
 
-(defun SMAJ:update-scripts (/ dfsFiles resultFile rc updated p nb errorFile errTxt)
+(defun SMAJ:update-scripts (includeDev / dfsFiles resultFile rc updated p nb errorFile errTxt)
   ;; Mise a jour des scripts SNCF depuis GitHub (rechargement des fichiers mis
   ;; a jour). Lancee seule au chargement (sans question), et par S_MAJ.
+  ;; includeDev : cf. SMAJ:run-powershell-update.
   (setq dfsFiles (SMAJ:find-appload-dfs))
   (setq resultFile (strcat (getenv "TEMP") "\\sncf_maj_updated.txt"))
   (setq errorFile (strcat (getenv "TEMP") "\\sncf_maj_error.txt"))
@@ -342,7 +357,7 @@
     (progn
       (princ "\nMise a jour en cours...")
 
-      (setq rc (SMAJ:run-powershell-update dfsFiles resultFile))
+      (setq rc (SMAJ:run-powershell-update dfsFiles resultFile includeDev))
 
       (if (/= rc 0)
         (progn
@@ -400,13 +415,30 @@
   )
 )
 
-(defun C:S_MAJ (/ r h)
+(defun C:S_MAJ (/ r h force)
   (princ "
 --- Scripts SNCF ---")
-  (setq r (vl-catch-all-apply 'SMAJ:update-scripts nil))
-  (if (vl-catch-all-error-p r)
-    (princ (strcat "
+  ;; Build local (compile.py) : il n'est remplace par la version GitHub que
+  ;; sur demande, pour ne pas perdre le test en cours.
+  (if *SNCF_DEV*
+    (progn
+      (initget "Oui Non")
+      (setq force
+        (= (getkword "\nBuild DEV charge : le remplacer par la version GitHub ? [Oui/Non] <Non> : ")
+           "Oui"
+        )
+      )
+    )
+  )
+  (if (and *SNCF_DEV* (not force))
+    (princ "\nMise a jour des scripts ignoree (build DEV).")
+    (progn
+      (setq r (vl-catch-all-apply 'SMAJ:update-scripts (list force)))
+      (if (vl-catch-all-error-p r)
+        (princ (strcat "
 Erreur : " (vl-catch-all-error-message r)))
+      )
+    )
   )
 
   ;; Relu apres la mise a jour des scripts : s'ils ont ete recharges, les
@@ -429,10 +461,15 @@ Actualisation terminee.")
 ;; Au chargement : scripts seulement. Les autres donnees (liste des cameras
 ;; GitHub...) sont deja chargees par leur module, et S_MAJ pose des questions
 ;; (actualiser les champs de vision du dessin ?) a ne pas poser au demarrage.
+;; Rien pour un build local (compile.py) : la mise a jour le remplacerait par
+;; la version GitHub.
 (if (not *SNCF_MAJ_AUTO_DONE*)
   (progn
     (setq *SNCF_MAJ_AUTO_DONE* T)
-    (vl-catch-all-apply 'SMAJ:update-scripts)
+    (if *SNCF_DEV*
+      (princ "\nBuild DEV : mise a jour automatique desactivee (S_MAJ pour la forcer).")
+      (vl-catch-all-apply 'SMAJ:update-scripts '(nil))
+    )
   )
 )
 
@@ -2765,7 +2802,7 @@ Actualisation terminee.")
   (if b "1" "0")
 )
 
-(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view useHatch hatchPat hatchCol hidden showDist cvname sit)
+(defun SC3D:CFG-STR (vals textHandle / manu model fmt focal res dist camh objh rot std grid trans view useHatch hatchPat hatchCol hidden showDist cvname sit tilt)
   (setq manu     (cdr (assoc 'manu vals)))
   (setq model    (cdr (assoc 'model vals)))
   (setq fmt      (cdr (assoc 'fmt vals)))
@@ -2787,6 +2824,8 @@ Actualisation terminee.")
   (setq showDist (if (assoc 'show_dist vals) (cdr (assoc 'show_dist vals)) T))
   (setq cvname   (cdr (assoc 'cvname vals)))
   (setq sit      (cdr (assoc 'situation vals)))
+  ;; Inclinaison manuelle en degres, nil = automatique (cf. SC3D:CALC).
+  (setq tilt     (cdr (assoc 'tilt vals)))
 
   (if (null view)     (setq view "TOP"))
   (if (null hatchPat) (setq hatchPat "ANSI31"))
@@ -2816,7 +2855,9 @@ Actualisation terminee.")
     (SC3D:BOOLSTR hidden) "|"
     (SC3D:BOOLSTR showDist) "|"
     (SC3D:CLEAN-NAME cvname) "|"
-    sit
+    sit "|"
+    (if (numberp tilt) (rtos tilt 2 6) "") "|"
+    (if (and (numberp tilt) (cdr (assoc 'tilt_mode vals))) (cdr (assoc 'tilt_mode vals)) "")
   )
 )
 
@@ -2848,6 +2889,18 @@ Actualisation terminee.")
       ;; Nom du champ de vision et situation (anciennes configs = vide).
       (cons 'cvname (if (> (length p) 20) (nth 20 p) ""))
       (cons 'situation (if (> (length p) 21) (nth 21 p) ""))
+      ;; Inclinaison manuelle en degres ; vide ou absente (anciennes configs) =
+      ;; inclinaison automatique.
+      (cons 'tilt (if (and (> (length p) 22) (/= (nth 22 p) "")) (SC3D:ATOF (nth 22 p) 0.0) nil))
+      ;; Mode d'inclinaison (cf. *SC3D_TILT_MODES*) ; absent = AUTO, ou FREE si
+      ;; une inclinaison manuelle est memorisee.
+      (cons 'tilt_mode
+        (cond
+          ((and (> (length p) 23) (/= (nth 23 p) "")) (nth 23 p))
+          ((and (> (length p) 22) (/= (nth 22 p) "")) "FREE")
+          (T "AUTO")
+        )
+      )
     )
     nil
   )
@@ -2898,8 +2951,11 @@ Actualisation terminee.")
 
   (write-line "sc3d_dialog : dialog {" f)
   (write-line "  label = \"SNCF - Champ de vision camera\";" f)
-  (write-line "  width = 65;" f)
   (write-line "  : column {" f)
+  ;; Reglages a gauche, inclinaison et apercu de cote a droite.
+  (write-line "  : row {" f)
+  (write-line "  : column {" f)
+  (write-line "    width = 65;" f)
 
   (write-line "    : boxed_column {" f)
   (write-line "      label = \"1. Camera\";" f)
@@ -2938,6 +2994,55 @@ Actualisation terminee.")
   (write-line "        : button { key = \"btn_regen\"; label = \"Generer\"; width = 10; }" f)
   (write-line "      }" f)
   (write-line "    }" f)
+  (write-line "  }" f)
+
+  ;; Colonne de droite : apercu (image dessinee par SC3D:DLG-PREVIEW, chiffres
+  ;; compris, puis fiche "intitule : valeur") et reglage de l'inclinaison.
+  (write-line "    : column {" f)
+  (write-line "    : boxed_column {" f)
+  (write-line "      label = \"5. Apercu (vue de cote)\";" f)
+  (write-line "      : image { key = \"preview\"; width = 66; height = 18; fixed_width = true; fixed_height = true; color = 250; }" f)
+  (write-line "      : row {" f)
+  (write-line "        : column {" f)
+  (write-line "          : text { label = \"Inclinaison :\"; }" f)
+  (write-line "          : text { label = \"Angle de vue V :\"; }" f)
+  (write-line "          : text { label = \"PPM a dist. max :\"; }" f)
+  (write-line "        }" f)
+  (write-line "        : column {" f)
+  (write-line "          : text { key = \"r_tilt\"; label = \"\"; width = 14; }" f)
+  (write-line "          : text { key = \"r_vang\"; label = \"\"; width = 14; }" f)
+  (write-line "          : text { key = \"r_ppm\"; label = \"\"; width = 14; }" f)
+  (write-line "        }" f)
+  (write-line "        : column {" f)
+  (write-line "          : text { label = \"Non visible :\"; }" f)
+  (write-line "          : text { label = \"Personnage entier :\"; }" f)
+  (write-line "          : text { label = \"\"; }" f)
+  (write-line "        }" f)
+  (write-line "        : column {" f)
+  (write-line "          : text { key = \"r_blind\"; label = \"\"; width = 17; }" f)
+  (write-line "          : text { key = \"r_man\"; label = \"\"; width = 17; }" f)
+  (write-line "          : text { label = \"\"; }" f)
+  (write-line "        }" f)
+  (write-line "      }" f)
+  (write-line "      : row {" f)
+  (write-line "        : edit_box { key = \"man_h\"; label = \"Taille du personnage (m)\"; edit_width = 5; fixed_width = true; }" f)
+  (write-line "        spacer;" f)
+  (write-line "      }" f)
+  (write-line "    }" f)
+  (write-line "    : boxed_column {" f)
+  (write-line "      label = \"6. Inclinaison\";" f)
+  (write-line "      : text { label = \"Le curseur d'inclinaison ajuste :\"; }" f)
+  (write-line "      : popup_list { key = \"tilt_mode\"; width = 66; }" f)
+  (write-line "      : row {" f)
+  (write-line "        : edit_box { key = \"tilt\"; label = \"Angle sous l'horizontale (deg)\"; edit_width = 7; }" f)
+  (write-line "        : button { key = \"tilt_m\"; label = \"-1\"; width = 5; fixed_width = true; }" f)
+  (write-line "        : button { key = \"tilt_p\"; label = \"+1\"; width = 5; fixed_width = true; }" f)
+  (write-line "      }" f)
+  (write-line "      : slider { key = \"tilt_sl\"; min_value = 0; max_value = 900; small_increment = 5; big_increment = 50; }" f)
+  (write-line "      : text { key = \"tilt_msg\"; label = \"\"; width = 66; }" f)
+  (write-line "    }" f)
+  (write-line "    }" f)
+  (write-line "  }" f)
 
   (write-line "    : errtile { key = \"msg\"; }" f)
   ;; "Voir le dessin" sur sa propre ligne, au-dessus des boutons OK / Appliquer / Annuler.
@@ -3087,14 +3192,882 @@ Actualisation terminee.")
     (cons 'hatch_color (if *SC3D_CUR_HATCH_COL* *SC3D_CUR_HATCH_COL* 1))
     (cons 'cvname (SC3D:CLEAN-NAME (get_tile "camname")))
     (cons 'situation (SC3D:SIT-LABEL->CODE (nth (atoi (get_tile "situation")) *SC3D_SIT_LIST*)))
+    (cons 'tilt (SC3D:DLG-TILT-VAL))
+    (cons 'tilt_mode (SC3D:DLG-TILT-MODE-CODE))
   )
 )
 
-(defun SC3D:VALIDATE-DLG (/ vals manu model cam f fmin fmax ok)
+;; ------------------------------------------------------------------------------------
+;; INCLINAISON ET APERCU DE COTE (boite de dialogue Creer/Modifier)
+;; Inclinaison en degres sous l'horizontale, reglee par le curseur (dixiemes de
+;; degre), la saisie ou les boutons -1/+1, selon le mode choisi :
+;;   AUTO : calculee depuis distance max et hauteurs (cf. SC3D:TILT-AUTO) ;
+;;   FREE : libre, distance max et hauteurs inchangees (la cible peut sortir de
+;;          l'image avant la distance max, cf. SC3D:FAR-DIST) ;
+;;   DIST : l'inclinaison calcule la distance max ;
+;;   OBJH : l'inclinaison calcule la hauteur objectif ;
+;;   ROT  : l'inclinaison calcule distance max et hauteur objectif ensemble, la
+;;          cible tournant autour de la camera (distance camera-cible conservee) ;
+;;   FOC  : l'inclinaison calcule la focale (bornee a la plage du modele) ;
+;;   FOCROT : la focale d'abord, puis, une fois sa limite atteinte, la distance
+;;          max et la hauteur objectif par rotation (comme ROT) ;
+;;   CAMH : l'inclinaison calcule la hauteur camera.
+;; Dans ces modes, les valeurs calculees sont celles ou le haut de l'image passe
+;; sur la cible a la distance max (relation inverse de l'auto).
+;; L'apercu est redessine a chaque changement.
+;; ------------------------------------------------------------------------------------
+
+(setq *SC3D_TILT_MIN* 0.0)
+(setq *SC3D_TILT_MAX* 89.9)
+(setq *SC3D_PRV_MAN_H* 2.0)
+(setq *SC3D_PRV_FLOOR* 0.0)
+;; Ordre de la liste "Le curseur d'inclinaison ajuste" : l'auto (mode par
+;; defaut d'une nouvelle camera, distance max et hauteurs saisissables), les
+;; modes les plus utiles, puis, apres le separateur (SEP, non selectionnable,
+;; cf. SC3D:DLG-TILT-MODE), les moins utilises.
+(setq *SC3D_TILT_MODES*
+  '(
+    ("AUTO" . "[Auto] Rien : inclinaison calculee depuis distance max et hauteurs")
+    ("ROT"  . "[Recommande] La distance max et la hauteur objectif")
+    ("FOCROT" . "[Ouverture d'angle] La focale, puis distance max et hauteur objectif")
+    ("OBJH" . "[Simple] La hauteur objectif")
+    ("DIST" . "[Simple] La distance max")
+    ("SEP"  . "------------------------------------------------------------")
+    ("FREE" . "Rien : valeurs fixes (la cible peut sortir de l'image)")
+    ("FOC"  . "La focale seule")
+    ("CAMH" . "La hauteur camera")
+  )
+)
+;; Dernier mode valide choisi (index), pour annuler un clic sur le separateur.
+(setq *SC3D_TILT_MODE_IDX* nil)
+
+(defun SC3D:TILT-MODE-INDEX (code)
+  (itoa (SC3D:INDEXOF code (mapcar 'car *SC3D_TILT_MODES*)))
+)
+;; Modes ou l'inclinaison calcule une ou des valeurs (cf. SC3D:DLG-APPLY-DRIVE).
+(setq *SC3D_TILT_DRIVE_MODES* '("DIST" "OBJH" "ROT" "FOC" "FOCROT" "CAMH"))
+;; Plage de focale (mm) des modes FOC / FOCROT pour une camera "Manuel" (pas
+;; de limites de modele).
+(setq *SC3D_MANUAL_FOCAL_RANGE* '(1.0 . 200.0))
+;; Mode FOCROT : geometrie de depart (distance max . hauteur objectif),
+;; conservee pendant les mouvements de l'angle comme *SC3D_ROT_R*.
+(setq *SC3D_DRIVE_BASE* nil)
+;; Etat du calcul par l'inclinaison affiche sous le curseur (ou nil).
+(setq *SC3D_DRIVE_INFO* nil)
+;; Mode ROT : distance camera-cible conservee pendant les mouvements de l'angle
+;; (*SC3D_ANGLE_EVENT*), recalculee depuis les valeurs saisies sinon. Evite que
+;; les arrondis des valeurs affichees ne la fassent deriver au fil du curseur.
+(setq *SC3D_ROT_R* nil)
+(setq *SC3D_ANGLE_EVENT* nil)
+
+(defun SC3D:CLAMP-TILT (d)
+  (SC3D:MAX *SC3D_TILT_MIN* (SC3D:MIN *SC3D_TILT_MAX* d))
+)
+
+(defun SC3D:DLG-TILT-MODE-CODE ()
+  (car (nth (atoi (get_tile "tilt_mode")) *SC3D_TILT_MODES*))
+)
+
+(defun SC3D:DLG-TILT-VAL ()
+  ;; nil = inclinaison automatique.
+  (if (= (SC3D:DLG-TILT-MODE-CODE) "AUTO")
+    nil
+    (SC3D:CLAMP-TILT (SC3D:ATOF (get_tile "tilt") 0.0))
+  )
+)
+
+(defun SC3D:DLG-SET-TILT (d)
+  (set_tile "tilt" (rtos d 2 1))
+  (set_tile "tilt_sl" (itoa (fix (+ (* (SC3D:CLAMP-TILT d) 10.0) 0.5))))
+)
+
+(defun SC3D:DLG-TILT-MODE (/ mode m)
+  ;; Passage en manuel : on part de l'inclinaison deja affichee. La valeur
+  ;; calculee par l'inclinaison (distance max ou hauteur camera) est grisee.
+  ;; Separateur choisi : retour au mode precedent.
+  (if (and (= (SC3D:DLG-TILT-MODE-CODE) "SEP") *SC3D_TILT_MODE_IDX*)
+    (set_tile "tilt_mode" (itoa *SC3D_TILT_MODE_IDX*))
+  )
+  (if (= (SC3D:DLG-TILT-MODE-CODE) "SEP")
+    (set_tile "tilt_mode" (SC3D:TILT-MODE-INDEX "AUTO"))
+  )
+  (setq *SC3D_TILT_MODE_IDX* (atoi (get_tile "tilt_mode")))
+  (setq mode (SC3D:DLG-TILT-MODE-CODE))
+  (setq m (if (= mode "AUTO") 1 0))
+  (mode_tile "tilt" m)
+  (mode_tile "tilt_sl" m)
+  (mode_tile "tilt_m" m)
+  (mode_tile "tilt_p" m)
+  (mode_tile "dist" (if (member mode '("DIST" "ROT" "FOCROT")) 1 0))
+  (mode_tile "objh" (if (member mode '("OBJH" "ROT" "FOCROT")) 1 0))
+  (mode_tile "focal" (if (member mode '("FOC" "FOCROT")) 1 0))
+  (mode_tile "camh" (if (= mode "CAMH") 1 0))
+  (SC3D:DLG-PREVIEW)
+)
+
+(defun SC3D:FOCAL-CAM (vals / manu model)
+  ;; Camera du catalogue choisie, ou nil en mode "Manuel".
+  (setq manu (cdr (assoc 'manu vals)))
+  (setq model (cdr (assoc 'model vals)))
+  (if (and manu model (/= manu "Manuel") (/= model "Manuel"))
+    (SC3D:FIND-CAMERA-ACTIVE manu model)
+    nil
+  )
+)
+
+(defun SC3D:FOCAL-LIMITS (vals / cam)
+  ;; (fmin . fmax) du modele choisi, ou *SC3D_MANUAL_FOCAL_RANGE*.
+  (setq cam (SC3D:FOCAL-CAM vals))
+  (if cam
+    (cons (cdr (assoc 'fmin cam)) (cdr (assoc 'fmax cam)))
+    *SC3D_MANUAL_FOCAL_RANGE*
+  )
+)
+
+(defun SC3D:VHALF-AT-FOCAL (vals f)
+  ;; Demi-angle vertical (rad) a la focale f, par le meme calcul que SC3D:CALC.
+  (/
+    (SC3D:DTR
+      (cdr (assoc 'vAng
+        (SC3D:CALC
+          (SC3D:SETVAL (SC3D:SETVAL vals 'focal f) 'dist (SC3D:MAX 1.0 (cdr (assoc 'dist vals))))
+        )
+      ))
+    )
+    2.0
+  )
+)
+
+(defun SC3D:FOCAL-FOR-VHALF (vals vHalf / cam fmin fmax tanW tanT tanA invF res)
+  ;; Focale donnant le demi-angle vertical vHalf (rad) : inverse de
+  ;; SC3D:CAMERA-ANGLE-INTERP (modele du catalogue) ou, a defaut, de la formule
+  ;; capteur de SC3D:CALC. nil si aucune focale positive ne convient.
+  (setq tanA (SC3D:TAN vHalf))
+  (setq cam (SC3D:FOCAL-CAM vals))
+  (if (and cam (SC3D:CAMERA-VANGLE vals (cdr (assoc 'fmin cam))))
+    (progn
+      (setq fmin (cdr (assoc 'fmin cam)))
+      (setq fmax (cdr (assoc 'fmax cam)))
+      (setq tanW (SC3D:TAN (/ (SC3D:DTR (cdr (assoc 'vmax cam))) 2.0)))
+      (setq tanT (SC3D:TAN (/ (SC3D:DTR (cdr (assoc 'vmin cam))) 2.0)))
+      (if (equal tanW tanT 0.000000001)
+        nil
+        (progn
+          (setq invF
+            (+ (/ 1.0 fmax)
+               (* (/ (- tanA tanT) (- tanW tanT)) (- (/ 1.0 fmin) (/ 1.0 fmax)))
+            )
+          )
+          (if (> invF 0.0) (/ 1.0 invF) nil)
+        )
+      )
+    )
+    (progn
+      (setq res (SC3D:PARSE-RES (cdr (assoc 'res vals))))
+      (if (> tanA 0.0)
+        (/
+          (/ (SC3D:SENSOR-WIDTH (cdr (assoc 'fmt vals))) (/ (float (car res)) (cadr res)))
+          (* 2.0 tanA)
+        )
+        nil
+      )
+    )
+  )
+)
+
+(defun SC3D:FOCAL-FOR-TILT (vals vReq / lim f)
+  ;; Focale pour le demi-angle vertical vReq (rad), bornee a SC3D:FOCAL-LIMITS.
+  ;; Renvoie (focale . borne), borne = "MIN" ou "MAX" si la focale voulue sort
+  ;; de la plage (elle vaut alors la limite), nil sinon.
+  (setq lim (SC3D:FOCAL-LIMITS vals))
+  (setq f
+    (cond
+      ((<= vReq 0.0001) nil)
+      ((>= vReq (- (/ *SC3D_PI* 2.0) 0.0001)) 0.0)
+      (T (SC3D:FOCAL-FOR-VHALF vals vReq))
+    )
+  )
+  (cond
+    ((null f) (cons (cdr lim) "MAX"))
+    ((< f (car lim)) (cons (car lim) "MIN"))
+    ((> f (cdr lim)) (cons (cdr lim) "MAX"))
+    (T (cons f nil))
+  )
+)
+
+(defun SC3D:FOCAL-STR (f lim / s)
+  ;; Focale a 2 decimales, plus si l'arrondi la ferait sortir de la plage du
+  ;; modele (refusee ensuite par SC3D:VALIDATE-DLG).
+  (setq s (rtos f 2 2))
+  (if (or (< (atof s) (car lim)) (> (atof s) (cdr lim)))
+    (rtos f 2 4)
+    s
+  )
+)
+
+(defun SC3D:DRIVE-FOCAL (mode vals tilt camH objH maxD / bD bO lim aT r fr vH aTop d lbl)
+  ;; Modes FOC / FOCROT : focale telle que le haut de l'image passe sur la
+  ;; cible a la distance max. En FOCROT, une fois la focale a sa limite, le
+  ;; reste de l'angle fait tourner la cible autour de la camera (comme ROT).
+  ;; Geometrie de reference de FOCROT conservee pendant les mouvements de
+  ;; l'angle (*SC3D_DRIVE_BASE*) : revenir en arriere redonne la distance et la
+  ;; hauteur de depart, puis la focale repart. Meme retour que
+  ;; SC3D:DLG-APPLY-DRIVE (nil ou message d'erreur).
+  (if (or (= mode "FOC") (not *SC3D_ANGLE_EVENT*) (null *SC3D_DRIVE_BASE*))
+    (setq *SC3D_DRIVE_BASE* (cons maxD objH))
+  )
+  (setq bD (car *SC3D_DRIVE_BASE*))
+  (setq bO (cdr *SC3D_DRIVE_BASE*))
+  (setq lim (SC3D:FOCAL-LIMITS vals))
+
+  (if (<= bD 0.0)
+    "Distance max incorrecte : focale non calculable."
+    (progn
+      (setq aT (atan (- camH bO) bD))
+      (setq r (sqrt (+ (* bD bD) (* (- camH bO) (- camH bO)))))
+      (setq fr (SC3D:FOCAL-FOR-TILT vals (- tilt aT)))
+      (setq lbl (if (= (cdr fr) "MIN") "mini" "maxi"))
+      (cond
+        ((null (cdr fr))
+          (set_tile "focal" (SC3D:FOCAL-STR (car fr) lim))
+          (if (= mode "FOCROT")
+            (progn
+              (set_tile "dist" (rtos bD 2 2))
+              (set_tile "objh" (rtos bO 2 2))
+            )
+          )
+          (setq *SC3D_DRIVE_INFO*
+            (strcat
+              "Focale ajustee : " (rtos (car fr) 2 2) " mm (possible de "
+              (rtos (car lim) 2 1) " a " (rtos (cdr lim) 2 1) " mm)"
+            )
+          )
+          nil
+        )
+        ((= mode "FOC")
+          (set_tile "focal" (SC3D:FOCAL-STR (car fr) lim))
+          (strcat
+            "Focale " lbl " atteinte (" (rtos (car fr) 2 2) " mm) : "
+            (if (= (cdr fr) "MIN") "reduire" "augmenter")
+            " l'inclinaison."
+          )
+        )
+        (T
+          (setq vH (SC3D:VHALF-AT-FOCAL vals (car fr)))
+          (setq aTop (- tilt vH))
+          (setq d (* r (cos aTop)))
+          (if (< d 0.1)
+            "Inclinaison trop forte : la distance max serait nulle."
+            (progn
+              (set_tile "focal" (SC3D:FOCAL-STR (car fr) lim))
+              (set_tile "dist" (rtos d 2 2))
+              (set_tile "objh" (rtos (- camH (* r (sin aTop))) 2 2))
+              (setq *SC3D_DRIVE_INFO*
+                (strcat
+                  "Focale " lbl " atteinte (" (rtos (car fr) 2 2)
+                  " mm) : distance max et hauteur objectif ajustees"
+                )
+              )
+              nil
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+(defun SC3D:DLG-APPLY-DRIVE (/ mode vals calc vHalf aTop camH objH maxD v r)
+  ;; Modes de *SC3D_TILT_DRIVE_MODES* : recalcule depuis l'inclinaison saisie la
+  ;; ou les valeurs reglees par l'angle. Renvoie nil si c'est fait (ou sans
+  ;; objet), sinon le message expliquant pourquoi le calcul est impossible (les
+  ;; valeurs sont alors laissees telles quelles).
+  (setq mode (SC3D:DLG-TILT-MODE-CODE))
+  (setq *SC3D_DRIVE_INFO* nil)
+  (if (member mode *SC3D_TILT_DRIVE_MODES*)
+    (progn
+      (setq vals (SC3D:READ-DLG))
+      (setq camH (cdr (assoc 'camh vals)))
+      (setq objH (cdr (assoc 'objh vals)))
+      (setq maxD (cdr (assoc 'dist vals)))
+      (cond
+        ;; Focale calculee par l'angle : pas de controle de la focale saisie.
+        ((member mode '("FOC" "FOCROT"))
+          (SC3D:DRIVE-FOCAL mode vals (SC3D:DTR (cdr (assoc 'tilt vals))) camH objH maxD)
+        )
+        ((<= (cdr (assoc 'focal vals)) 0.0)
+          "Focale incorrecte : valeur non calculee."
+        )
+        (T
+          ;; Seul l'angle vertical sert ici (il ne depend pas de la distance).
+          (setq calc (SC3D:CALC (SC3D:SETVAL vals 'dist (if (> maxD 0.0) maxD 1.0))))
+          (setq vHalf (/ (SC3D:DTR (cdr (assoc 'vAng calc))) 2.0))
+          (setq aTop (- (SC3D:DTR (cdr (assoc 'tilt vals))) vHalf))
+          (cond
+            ((= mode "DIST")
+              (cond
+                ((<= camH objH)
+                  "Camera pas plus haute que la cible : distance max non calculable."
+                )
+                ((<= aTop 0.0001)
+                  (strcat
+                    "Inclinaison trop faible (mini "
+                    (rtos (SC3D:RTD vHalf) 2 1)
+                    " deg) : le haut de l'image ne redescend pas sur la cible."
+                  )
+                )
+                ((> (setq v (/ (- camH objH) (SC3D:TAN aTop))) 999.0)
+                  "Inclinaison trop faible : distance max superieure a 999 m."
+                )
+                (T (set_tile "dist" (rtos v 2 2)) nil)
+              )
+            )
+            ;; Hauteur objectif negative autorisee (cible sous le niveau du pied
+            ;; de la camera, ex. sous-sol filme depuis le niveau superieur).
+            ((= mode "OBJH")
+              (if (<= maxD 0.0)
+                "Distance max incorrecte : hauteur objectif non calculable."
+                (progn (set_tile "objh" (rtos (- camH (* maxD (SC3D:TAN aTop))) 2 2)) nil)
+              )
+            )
+            ((= mode "ROT")
+              ;; La cible (distance max, hauteur objectif) tourne autour de la
+              ;; camera sur le cercle de rayon r = distance camera-cible.
+              (if (not (and *SC3D_ANGLE_EVENT* *SC3D_ROT_R*))
+                (setq *SC3D_ROT_R* (sqrt (+ (* maxD maxD) (* (- camH objH) (- camH objH)))))
+              )
+              (setq r *SC3D_ROT_R*)
+              (cond
+                ((<= maxD 0.0) "Distance max incorrecte : rotation impossible.")
+                ((< (* r (cos aTop)) 0.1)
+                  "Inclinaison trop forte : la distance max serait nulle."
+                )
+                (T
+                  (set_tile "dist" (rtos (* r (cos aTop)) 2 2))
+                  (set_tile "objh" (rtos (- camH (* r (sin aTop))) 2 2))
+                  (setq *SC3D_DRIVE_INFO* (strcat "La cible tourne autour de la camera, a " (rtos r 2 2) " m d'elle"))
+                  nil
+                )
+              )
+            )
+            (T
+              (cond
+                ((<= maxD 0.0) "Distance max incorrecte : hauteur camera non calculable.")
+                ((< (setq v (+ objH (* maxD (SC3D:TAN aTop)))) 0.0)
+                  "Inclinaison trop faible : la hauteur camera serait negative."
+                )
+                (T (set_tile "camh" (rtos v 2 2)) nil)
+              )
+            )
+          )
+        )
+      )
+    )
+    nil
+  )
+)
+
+(defun SC3D:DLG-PREVIEW-ANGLE ()
+  ;; Apercu apres un mouvement de l'angle seul (cf. *SC3D_ROT_R*).
+  (setq *SC3D_ANGLE_EVENT* T)
+  (SC3D:DLG-PREVIEW)
+  (setq *SC3D_ANGLE_EVENT* nil)
+)
+
+(defun SC3D:MAN-H (/ v)
+  ;; Taille du personnage de l'apercu, memorisee entre les sessions.
+  (if (null *SC3D_MAN_H*)
+    (progn
+      (setq v (SC3D:ATOF (getenv "SC3D_MAN_H") 2.0))
+      (setq *SC3D_MAN_H* (if (> v 0.0) v 2.0))
+    )
+  )
+  *SC3D_MAN_H*
+)
+
+(defun SC3D:DLG-MAN-H (/ v)
+  (setq v (SC3D:ATOF (get_tile "man_h") 0.0))
+  (if (and (> v 0.0) (<= v 10.0))
+    (progn
+      (setq *SC3D_MAN_H* v)
+      (vl-catch-all-apply 'setenv (list "SC3D_MAN_H" (rtos v 2 2)))
+    )
+    (set_tile "man_h" (rtos (SC3D:MAN-H) 2 2))
+  )
+  (SC3D:DLG-PREVIEW)
+)
+
+(defun SC3D:DLG-TILT-EDIT ()
+  (SC3D:DLG-SET-TILT (SC3D:CLAMP-TILT (SC3D:ATOF (get_tile "tilt") 0.0)))
+  (SC3D:DLG-PREVIEW-ANGLE)
+)
+
+(defun SC3D:DLG-TILT-SLIDER (v)
+  ;; Le curseur n'est pas repositionne ici : il est en cours de deplacement.
+  (set_tile "tilt" (rtos (/ (atoi v) 10.0) 2 1))
+  (SC3D:DLG-PREVIEW-ANGLE)
+)
+
+(defun SC3D:DLG-TILT-STEP (delta)
+  (SC3D:DLG-SET-TILT (SC3D:CLAMP-TILT (+ (SC3D:ATOF (get_tile "tilt") 0.0) delta)))
+  (SC3D:DLG-PREVIEW-ANGLE)
+)
+
+(defun SC3D:PRV-CLIP (x1 y1 x2 y2 xmax ymax / dx dy t0 t1 p q r ok)
+  ;; Decoupe d'un segment (pixels) au cadre de l'image (Liang-Barsky).
+  ;; Renvoie (x1 y1 x2 y2) ou nil si le segment est hors cadre.
+  (setq dx (- x2 x1) dy (- y2 y1) t0 0.0 t1 1.0 ok T)
+  (foreach pq (list (cons (- dx) (- x1 0.0)) (cons dx (- xmax x1))
+                    (cons (- dy) (- y1 0.0)) (cons dy (- ymax y1)))
+    (setq p (car pq) q (cdr pq))
+    (if ok
+      (if (equal p 0.0 1e-12)
+        (if (< q 0.0) (setq ok nil))
+        (progn
+          (setq r (/ q p))
+          (if (< p 0.0)
+            (if (> r t1) (setq ok nil) (if (> r t0) (setq t0 r)))
+            (if (< r t0) (setq ok nil) (if (< r t1) (setq t1 r)))
+          )
+        )
+      )
+    )
+  )
+  (if ok
+    (list (+ x1 (* t0 dx)) (+ y1 (* t0 dy)) (+ x1 (* t1 dx)) (+ y1 (* t1 dy)))
+    nil
+  )
+)
+
+;; Conversion monde (x = distance, y = hauteur, en m) -> pixels de l'image, selon
+;; *SC3D_PRV* = (ox oy echelle largeur hauteur) ; y pixel vers le bas.
+(defun SC3D:PRV-PX (x) (+ (nth 0 *SC3D_PRV*) (* x (nth 2 *SC3D_PRV*))))
+(defun SC3D:PRV-PY (y) (- (nth 1 *SC3D_PRV*) (* y (nth 2 *SC3D_PRV*))))
+
+(defun SC3D:PRV-SEG-PX (x1 y1 x2 y2 col / c)
+  (if (setq c (SC3D:PRV-CLIP x1 y1 x2 y2 (1- (nth 3 *SC3D_PRV*)) (1- (nth 4 *SC3D_PRV*))))
+    (vector_image
+      (fix (+ (nth 0 c) 0.5)) (fix (+ (nth 1 c) 0.5))
+      (fix (+ (nth 2 c) 0.5)) (fix (+ (nth 3 c) 0.5))
+      col
+    )
+  )
+)
+
+(defun SC3D:PRV-SEG (x1 y1 x2 y2 col)
+  (SC3D:PRV-SEG-PX (SC3D:PRV-PX x1) (SC3D:PRV-PY y1) (SC3D:PRV-PX x2) (SC3D:PRV-PY y2) col)
+)
+
+(defun SC3D:PRV-RAY (ang len col dashed / camH x1 y1 x2 y2 lp ux uy a b)
+  ;; Rayon issu de la camera, ang = angle sous l'horizontale, arrete au niveau
+  ;; *SC3D_PRV_FLOOR* (sol, ou cible en sous-sol).
+  (setq camH (cdr (assoc 'camh *SC3D_PRV_VALS*)))
+  (if (> (sin ang) 0.000001)
+    (setq len (SC3D:MIN len (/ (- camH *SC3D_PRV_FLOOR*) (sin ang))))
+  )
+  (setq x1 (SC3D:PRV-PX 0.0) y1 (SC3D:PRV-PY camH))
+  (setq x2 (SC3D:PRV-PX (* len (cos ang))) y2 (SC3D:PRV-PY (- camH (* len (sin ang)))))
+  (setq lp (distance (list x1 y1) (list x2 y2)))
+  (if (and dashed (> lp 1.0))
+    (progn
+      ;; Tirets de 5 px tous les 9 px.
+      (setq ux (/ (- x2 x1) lp) uy (/ (- y2 y1) lp) a 0.0)
+      (while (< a lp)
+        (setq b (SC3D:MIN lp (+ a 5.0)))
+        (SC3D:PRV-SEG-PX (+ x1 (* a ux)) (+ y1 (* a uy)) (+ x1 (* b ux)) (+ y1 (* b uy)) col)
+        (setq a (+ a 9.0))
+      )
+    )
+    (SC3D:PRV-SEG-PX x1 y1 x2 y2 col)
+  )
+)
+
+(defun SC3D:PRV-BAND (x1 x2 col striped / px1 px2 y)
+  ;; Bande coloree sous la ligne de sol, de x1 a x2 (m) ; rayee (2 px sur 4)
+  ;; pour les zones non visibles, a distinguer du rouge des zones PPM.
+  (setq px1 (fix (+ (SC3D:PRV-PX x1) 0.5)))
+  (setq px2 (fix (+ (SC3D:PRV-PX x2) 0.5)))
+  (setq y (fix (+ (SC3D:PRV-PY 0.0) 1.5)))
+  (if striped
+    (while (< px1 px2)
+      (fill_image px1 y (min 2 (- px2 px1)) 8 col)
+      (setq px1 (+ px1 4))
+    )
+    (if (> px2 px1)
+      (fill_image px1 y (- px2 px1) 8 col)
+    )
+  )
+)
+
+(defun SC3D:PRV-MAN (x col / h r a i p q)
+  ;; Silhouette de *SC3D_PRV_MAN_H* m a la distance x.
+  (setq h *SC3D_PRV_MAN_H*)
+  (setq r (* 0.07 h))
+  ;; Tete : octogone.
+  (setq i 0)
+  (while (< i 8)
+    (setq a (* i (/ *SC3D_PI* 4.0)))
+    (setq p (list (+ x (* r (cos a))) (+ (* 0.93 h) (* r (sin a)))))
+    (setq a (* (1+ i) (/ *SC3D_PI* 4.0)))
+    (setq q (list (+ x (* r (cos a))) (+ (* 0.93 h) (* r (sin a)))))
+    (SC3D:PRV-SEG (car p) (cadr p) (car q) (cadr q) col)
+    (setq i (1+ i))
+  )
+  ;; Corps, bras, jambes.
+  (SC3D:PRV-SEG x (* 0.86 h) x (* 0.5 h) col)
+  (SC3D:PRV-SEG x (* 0.78 h) (- x (* 0.15 h)) (* 0.52 h) col)
+  (SC3D:PRV-SEG x (* 0.78 h) (+ x (* 0.15 h)) (* 0.52 h) col)
+  (SC3D:PRV-SEG x (* 0.5 h) (- x (* 0.11 h)) 0.0 col)
+  (SC3D:PRV-SEG x (* 0.5 h) (+ x (* 0.11 h)) 0.0 col)
+)
+
+(defun SC3D:PRV-ANGLE-OF (x y camH)
+  ;; Angle sous l'horizontale sous lequel la camera voit le point (x, y), x > 0.
+  (atan (- camH y) x)
+)
+
+(defun SC3D:PRV-MAN-STATE (x camH aTop aBot / aHead aFeet)
+  ;; 2 = personnage entier dans l'image, 1 = en partie, 0 = hors image.
+  (setq aHead (SC3D:PRV-ANGLE-OF x *SC3D_PRV_MAN_H* camH))
+  (setq aFeet (SC3D:PRV-ANGLE-OF x 0.0 camH))
+  (cond
+    ((and (>= aHead aTop) (<= aFeet aBot)) 2)
+    ((and (<= aHead aBot) (>= aFeet aTop)) 1)
+    (T 0)
+  )
+)
+
+(defun SC3D:PRV-MAN-RANGE (maxD camH aTop aBot / n i x xFirst xLast)
+  ;; Distances (premiere . derniere) ou le personnage est entier dans l'image, ou nil.
+  ;; Les deux limites etant des droites, l'ensemble visible est un intervalle.
+  (setq n 400 i 1)
+  (while (<= i n)
+    (setq x (* maxD (/ (float i) n)))
+    (if (= (SC3D:PRV-MAN-STATE x camH aTop aBot) 2)
+      (progn
+        (if (null xFirst) (setq xFirst x))
+        (setq xLast x)
+      )
+    )
+    (setq i (1+ i))
+  )
+  (if xFirst (cons xFirst xLast) nil)
+)
+
+;; Police a traits de l'apercu (une image DCL ne sait pas ecrire de texte) :
+;; segments (x1 y1 x2 y2) dans une case de 5 x 7 px, y vers le bas.
+(setq *SC3D_PRV_FONT*
+  '(
+    ("0" (0 0 4 0) (4 0 4 6) (4 6 0 6) (0 6 0 0))
+    ("1" (2 0 2 6) (1 1 2 0))
+    ("2" (0 0 4 0) (4 0 4 3) (4 3 0 3) (0 3 0 6) (0 6 4 6))
+    ("3" (0 0 4 0) (4 0 4 6) (4 6 0 6) (1 3 4 3))
+    ("4" (0 0 0 3) (0 3 4 3) (4 0 4 6))
+    ("5" (4 0 0 0) (0 0 0 3) (0 3 4 3) (4 3 4 6) (4 6 0 6))
+    ("6" (4 0 0 0) (0 0 0 6) (0 6 4 6) (4 6 4 3) (4 3 0 3))
+    ("7" (0 0 4 0) (4 0 4 6))
+    ("8" (0 0 4 0) (4 0 4 6) (4 6 0 6) (0 6 0 0) (0 3 4 3))
+    ("9" (4 3 0 3) (0 3 0 0) (0 0 4 0) (4 0 4 6) (4 6 0 6))
+    ("." (1 5 1 6))
+    ("-" (1 3 3 3))
+    ("m" (0 2 0 6) (0 2 4 2) (2 2 2 6) (4 2 4 6))
+  )
+)
+
+(defun SC3D:PRV-CHAR-ADV (c)
+  (if (= c ".") 3 6)
+)
+
+(defun SC3D:PRV-TEXT-W (str / i w)
+  (setq w 0 i 1)
+  (while (<= i (strlen str))
+    (setq w (+ w (SC3D:PRV-CHAR-ADV (substr str i 1))))
+    (setq i (1+ i))
+  )
+  (SC3D:MAX 0 (- w 1))
+)
+
+(defun SC3D:PRV-TEXT (str px py col / x0 y0 i c)
+  ;; Texte en police a traits, coin haut gauche (px, py) en pixels.
+  (setq x0 (fix (+ px 0.5)) y0 (fix (+ py 0.5)) i 1)
+  (while (<= i (strlen str))
+    (setq c (substr str i 1))
+    (foreach sg (cdr (assoc c *SC3D_PRV_FONT*))
+      (SC3D:PRV-SEG-PX
+        (+ x0 (nth 0 sg)) (+ y0 (nth 1 sg)) (+ x0 (nth 2 sg)) (+ y0 (nth 3 sg)) col
+      )
+    )
+    (setq x0 (+ x0 (SC3D:PRV-CHAR-ADV c)) i (1+ i))
+  )
+)
+
+(defun SC3D:PRV-TEXT-LEFT (str cx / w)
+  ;; Bord gauche (px) d'un texte centre sur cx, garde dans le cadre.
+  (setq w (SC3D:PRV-TEXT-W str))
+  (SC3D:MAX 1.0 (SC3D:MIN (- (nth 3 *SC3D_PRV*) w 2.0) (- cx (/ w 2.0))))
+)
+
+(defun SC3D:PRV-LABEL-STEP (s maxD / need lst)
+  ;; Pas des distances ecrites : 5 m, plus si les chiffres se chevauchent.
+  (setq need (+ (SC3D:PRV-TEXT-W (rtos maxD 2 0)) 8.0))
+  (setq lst '(5.0 10.0 25.0 50.0 100.0 250.0 500.0))
+  (while (and (cdr lst) (< (* s (car lst)) need))
+    (setq lst (cdr lst))
+  )
+  (car lst)
+)
+
+(defun SC3D:PRV-READABLE (col)
+  ;; Le bleu pur (zone PPM 20 / 12) est peu lisible sur le fond sombre.
+  (if (= col 5) 151 col)
+)
+
+(defun SC3D:PRV-ADD-BOUND (x col bounds)
+  ;; Ajoute un debut de zone (x . couleur) en tete de bounds ; une frontiere a
+  ;; la meme distance affichee (zone plus etroite que 0,1 m) est remplacee.
+  (if (and bounds (equal (car (car bounds)) x 0.1))
+    (cons (cons x col) (cdr bounds))
+    (cons (cons x col) bounds)
+  )
+)
+
+(defun SC3D:PRV-BOUNDARY-LABELS (bounds yTick y2 y3 / r2 r3 b col str cx left w y)
+  ;; Distances des frontieres de zones, bounds = liste de (distance . couleur)
+  ;; triee : petit trait de couleur sous la bande (yTick), texte centre sur la
+  ;; frontiere sur la ligne y2, ou y3 si la place est prise, sinon omis.
+  (setq r2 -100.0 r3 -100.0)
+  (foreach b bounds
+    (setq col (SC3D:PRV-READABLE (cdr b)))
+    (setq str (rtos (car b) 2 1))
+    (setq cx (SC3D:PRV-PX (car b)))
+    (setq left (SC3D:PRV-TEXT-LEFT str cx))
+    (setq w (SC3D:PRV-TEXT-W str))
+    (setq y
+      (cond
+        ((> left (+ r2 4.0)) (setq r2 (+ left w)) y2)
+        ((> left (+ r3 4.0)) (setq r3 (+ left w)) y3)
+        (T nil)
+      )
+    )
+    (if y
+      (progn
+        (SC3D:PRV-SEG-PX cx yTick cx (+ yTick 3.0) col)
+        (SC3D:PRV-TEXT str left y col)
+      )
+    )
+  )
+)
+
+(defun SC3D:PRV-STEP (maxD)
+  ;; Pas des graduations au sol (m).
+  (cond ((<= maxD 12.0) 1.0) ((<= maxD 60.0) 5.0) ((<= maxD 150.0) 10.0) (T 50.0))
+)
+
+(defun SC3D:DLG-PREVIEW-1 (/ vals calc maxD camH objH tilt vHalf aTop aBot nearD farD farStart w h base gnd xLo xHi s ox lst prev done z d x1 x2 step lab x str left lastR bounds st range ppm zone yTop yBot msg)
+  ;; Modes ou l'inclinaison regle des valeurs : elles sont recalculees d'abord.
+  (setq msg (SC3D:DLG-APPLY-DRIVE))
+  (set_tile "tilt_msg"
+    (cond
+      (msg (strcat "/!\\ " msg))
+      (*SC3D_DRIVE_INFO*)
+      (T "")
+    )
+  )
+  (setq *SC3D_PRV_MAN_H* (SC3D:MAN-H))
+
+  (setq vals (SC3D:READ-DLG))
+  (setq maxD (cdr (assoc 'dist vals)))
+  (setq camH (cdr (assoc 'camh vals)))
+  (setq objH (cdr (assoc 'objh vals)))
+
+  (setq w (dimx_tile "preview"))
+  (setq h (dimy_tile "preview"))
+  (start_image "preview")
+  (fill_image 0 0 w h 250)
+
+  (if (or (<= maxD 0.0) (< camH 0.0) (<= (cdr (assoc 'focal vals)) 0.0))
+    (progn
+      (end_image)
+      (foreach k '("r_tilt" "r_vang" "r_ppm" "r_blind" "r_man")
+        (set_tile k "-")
+      )
+      (set_tile "tilt_msg" "/!\\ Apercu impossible : distance, hauteur camera ou focale incorrecte.")
+    )
+    (progn
+      (setq calc (SC3D:CALC vals))
+      (setq tilt (cdr (assoc 'tilt calc)))
+      (setq vHalf (/ (SC3D:DTR (cdr (assoc 'vAng calc))) 2.0))
+      (setq nearD (cdr (assoc 'nearD calc)))
+      (setq farD (cdr (assoc 'farD calc)))
+      (setq farStart (SC3D:FAR-BAND-START nearD farD maxD))
+      (setq aTop (- tilt vHalf))
+      (setq aBot (+ tilt vHalf))
+
+      ;; Inclinaison auto : la saisie et le curseur suivent la valeur calculee.
+      (if (not (numberp (cdr (assoc 'tilt vals))))
+        (SC3D:DLG-SET-TILT (SC3D:RTD tilt))
+      )
+
+      ;; Echelle identique en X et Y (angles reels), cadre : un peu derriere la
+      ;; camera jusqu'un peu apres la distance max, et du sol (ou de la cible si
+      ;; elle est sous le sol) a la plus haute des hauteurs camera / cible /
+      ;; personnage. Les 46 px du bas de l'image sont reserves aux distances
+      ;; ecrites : graduations (base + 14), puis frontieres PPM sur deux lignes
+      ;; (base + 25 et base + 37). Bande PPM de 8 px sous le sol.
+      (setq xLo (- (SC3D:MAX 1.0 (* 0.05 maxD))))
+      (setq xHi (+ maxD (SC3D:MAX 1.5 (* 0.06 maxD))))
+      (setq yTop (+ (SC3D:MAX camH (SC3D:MAX objH *SC3D_PRV_MAN_H*)) 0.8))
+      (setq yBot (if (< objH 0.0) (- objH 0.5) 0.0))
+      (setq base (- h 46.0))
+      (setq s (SC3D:MIN (/ (- w 8.0) (- xHi xLo)) (/ (- base 4.0) (- yTop yBot))))
+      (setq gnd (+ base (* s yBot)))
+      (setq ox (+ 4.0 (/ (- (- w 8.0) (* s (- xHi xLo))) 2.0) (- (* s xLo))))
+      (setq *SC3D_PRV* (list ox gnd s w h))
+      (setq *SC3D_PRV_VALS* vals)
+      ;; Les rayons s'arretent au sol, ou au niveau de la cible si elle est
+      ;; plus basse (cf. SC3D:PRV-RAY).
+      (setq *SC3D_PRV_FLOOR* (SC3D:MIN 0.0 objH))
+
+      ;; Bande au sol : zones non visibles (rayees) et zones PPM, memes limites
+      ;; que la vue de cote (cf. SC3D:CREATE-BLOCK-GEOM-SIDE). Chaque debut de
+      ;; zone est note (distance . couleur) pour ecrire les frontieres.
+      (if (> nearD 0.0)
+        (SC3D:PRV-BAND 0.0 (SC3D:MIN nearD maxD) 1 T)
+      )
+      (SC3D:PRV-BAND farStart maxD 1 T)
+      (setq lst (SC3D:PPM-LIST (cdr (assoc 'std vals))) prev 0.0 done nil bounds nil)
+      (foreach z lst
+        (if (not done)
+          (progn
+            (setq d (SC3D:PPM-DIST (nth 0 z) (cdr (assoc 'resW calc)) (cdr (assoc 'tanH calc)) (cdr (assoc 'tanV calc)) tilt camH objH maxD))
+            (setq x1 (SC3D:MAX prev nearD))
+            (setq x2 (SC3D:MIN d farD))
+            (if (> x2 x1)
+              (progn
+                (SC3D:PRV-BAND x1 x2 (nth 2 z) nil)
+                (if (> x1 0.05) (setq bounds (SC3D:PRV-ADD-BOUND x1 (nth 2 z) bounds)))
+              )
+            )
+            (if (>= d farD) (setq done T) (setq prev d))
+          )
+        )
+      )
+      (if (< farStart (- maxD 0.05))
+        (setq bounds (SC3D:PRV-ADD-BOUND farStart 1 bounds))
+      )
+
+      ;; Sol, graduations et distances tous les 5 m (plus si elles se
+      ;; chevauchent), en gris, l'unite apres la derniere.
+      (SC3D:PRV-SEG xLo 0.0 xHi 0.0 254)
+      (setq step (SC3D:PRV-STEP maxD) x 0.0)
+      (while (<= x (+ maxD 0.0001))
+        (SC3D:PRV-SEG-PX (SC3D:PRV-PX x) gnd (SC3D:PRV-PX x) (+ gnd 11.0) 254)
+        (setq x (+ x step))
+      )
+      (setq lab (SC3D:PRV-LABEL-STEP s maxD) x 0.0 lastR nil)
+      (while (<= x (+ maxD 0.0001))
+        (setq str (rtos x 2 0))
+        (setq left (SC3D:PRV-TEXT-LEFT str (SC3D:PRV-PX x)))
+        (SC3D:PRV-TEXT str left (+ base 14.0) 254)
+        (setq lastR (+ left (SC3D:PRV-TEXT-W str)))
+        (setq x (+ x lab))
+      )
+      (if lastR
+        (SC3D:PRV-TEXT "m" (+ lastR 3.0) (+ base 14.0) 254)
+      )
+
+      ;; Frontieres des zones, dans la couleur de la zone qui commence.
+      (SC3D:PRV-BOUNDARY-LABELS (reverse bounds) (+ gnd 9.0) (+ base 25.0) (+ base 37.0))
+
+      ;; Mat, rayons (haut / bas en cyan, axe optique en tirets) et camera.
+      (SC3D:PRV-SEG 0.0 0.0 0.0 camH 253)
+      (SC3D:PRV-RAY aTop (* 4.0 (- xHi xLo)) 4 nil)
+      (SC3D:PRV-RAY aBot (* 4.0 (- xHi xLo)) 4 nil)
+      (SC3D:PRV-RAY tilt (* 4.0 (- xHi xLo)) 8 T)
+      (SC3D:PRV-CAMERA camH tilt)
+
+      ;; Cible (croix orange a la hauteur objectif) et personnage a la distance
+      ;; max : vert si entier dans l'image, orange si en partie, rouge si hors image.
+      (SC3D:PRV-SEG (- maxD (/ 4.0 s)) objH (+ maxD (/ 4.0 s)) objH 30)
+      (SC3D:PRV-SEG maxD (- objH (/ 4.0 s)) maxD (+ objH (/ 4.0 s)) 30)
+      (setq st (SC3D:PRV-MAN-STATE maxD camH aTop aBot))
+      (SC3D:PRV-MAN maxD (cond ((= st 2) 3) ((= st 1) 30) (T 1)))
+      (end_image)
+
+      ;; Fiche sous l'image (le mode est deja dans la liste : seul l'auto est
+      ;; rappele).
+      (set_tile "r_tilt"
+        (strcat
+          (rtos (SC3D:RTD tilt) 2 1) " deg"
+          (if (= (cdr (assoc 'tilt_mode vals)) "AUTO") " (auto)" "")
+        )
+      )
+      (set_tile "r_vang" (strcat (rtos (cdr (assoc 'vAng calc)) 2 1) " deg"))
+      (setq ppm (SC3D:PPM-AT-DIST maxD vals calc))
+      (setq zone (if ppm (SC3D:PPM-ZONE ppm (cdr (assoc 'std vals))) nil))
+      (set_tile "r_ppm"
+        (cond
+          ((null ppm) "-")
+          (zone (strcat (rtos ppm 2 0) " (zone " (rtos zone 2 0) ")"))
+          (T (strcat (rtos ppm 2 0) " (hors zones)"))
+        )
+      )
+      (set_tile "r_blind"
+        (cond
+          ((and (<= nearD 0.0) (>= farStart maxD)) "aucune zone")
+          ((>= farStart maxD) (strcat "0 a " (rtos (SC3D:MIN nearD maxD) 2 1) " m"))
+          ((<= nearD 0.0) (strcat (rtos farStart 2 1) " a " (rtos maxD 2 1) " m"))
+          (T
+            (strcat
+              "0-" (rtos nearD 2 1) " et "
+              (rtos farStart 2 1) "-" (rtos maxD 2 1) " m"
+            )
+          )
+        )
+      )
+      (setq range (SC3D:PRV-MAN-RANGE maxD camH aTop aBot))
+      (set_tile "r_man"
+        (if range
+          (strcat (rtos (car range) 2 1) " a " (rtos (cdr range) 2 1) " m")
+          "jamais"
+        )
+      )
+    )
+  )
+)
+
+(defun SC3D:PRV-CAMERA (camH tilt / ca sa cx cy l k)
+  ;; Boitier de 14 x 8 px incline selon l'axe optique (y pixel vers le bas).
+  (setq ca (cos tilt) sa (sin tilt))
+  (setq cx (SC3D:PRV-PX 0.0) cy (SC3D:PRV-PY camH))
+  (setq l 7.0 k 4.0)
+  (SC3D:PRV-SEG-PX (+ cx (* (- l) ca) (* k sa)) (+ cy (* (- l) sa) (* (- k) ca)) (+ cx (* l ca) (* k sa)) (+ cy (* l sa) (* (- k) ca)) 2)
+  (SC3D:PRV-SEG-PX (+ cx (* l ca) (* k sa)) (+ cy (* l sa) (* (- k) ca)) (+ cx (* l ca) (* (- k) sa)) (+ cy (* l sa) (* k ca)) 2)
+  (SC3D:PRV-SEG-PX (+ cx (* l ca) (* (- k) sa)) (+ cy (* l sa) (* k ca)) (+ cx (* (- l) ca) (* (- k) sa)) (+ cy (* (- l) sa) (* k ca)) 2)
+  (SC3D:PRV-SEG-PX (+ cx (* (- l) ca) (* (- k) sa)) (+ cy (* (- l) sa) (* k ca)) (+ cx (* (- l) ca) (* k sa)) (+ cy (* (- l) sa) (* (- k) ca)) 2)
+)
+
+(defun SC3D:DLG-PREVIEW (/ r)
+  ;; Une erreur dans une action de tuile fermerait la commande : on la capte.
+  (setq r (vl-catch-all-apply 'SC3D:DLG-PREVIEW-1 nil))
+  (if (vl-catch-all-error-p r)
+    (progn
+      (vl-catch-all-apply 'end_image nil)
+      (set_tile "tilt_msg" (strcat "/!\\ Apercu indisponible : " (vl-catch-all-error-message r)))
+    )
+  )
+  (princ)
+)
+
+(defun SC3D:VALIDATE-DLG (/ vals manu model cam f fmin fmax ok driveMsg)
   ;; Lit et valide les valeurs de la boite de dialogue (focale compatible avec
   ;; le modele choisi, le cas echeant). Renvoie les valeurs si valides, nil
   ;; sinon (message d'erreur deja affiche dans "msg"). Partage entre le bouton
   ;; OK (SC3D:ACCEPT-DLG) et le bouton Appliquer (SC3D:APPLY-DLG).
+  ;; Modes DIST / CAMH : la valeur reglee par l'inclinaison est recalculee
+  ;; avant lecture ; si elle ne peut pas l'etre, les valeurs sont refusees
+  ;; (sinon distance, hauteurs et inclinaison seraient incoherentes).
+  (setq driveMsg (SC3D:DLG-APPLY-DRIVE))
   (setq vals (SC3D:READ-DLG))
   (setq manu (cdr (assoc 'manu vals)))
   (setq model (cdr (assoc 'model vals)))
@@ -3125,6 +4098,13 @@ Actualisation terminee.")
       )
     )
     (setq ok T)
+  )
+
+  (if (and ok driveMsg)
+    (progn
+      (set_tile "msg" (strcat "/!\\ " driveMsg))
+      (setq ok nil)
+    )
   )
 
   (if ok vals nil)
@@ -3190,7 +4170,7 @@ Actualisation terminee.")
   (princ)
 )
 
-(defun SC3D:DIALOG (def applyFn / dcl id result st pos state done fmt res std manu model)
+(defun SC3D:DIALOG (def applyFn / dcl id result st pos state done fmt res std manu model k)
   ;; applyFn : fonction optionnelle (quote 'SC3D:xxx) appelee avec les valeurs
   ;; courantes quand l'utilisateur clique sur "Appliquer" (applique sans
   ;; fermer la fenetre) ; nil = bouton "Appliquer" desactive (cas Creer, ou il
@@ -3260,6 +4240,11 @@ Actualisation terminee.")
         (mapcar 'add_list *SC3D_SIT_LIST*)
         (end_list)
 
+        (start_list "tilt_mode")
+        (mapcar 'add_list (mapcar 'cdr *SC3D_TILT_MODES*))
+        (end_list)
+        (set_tile "man_h" (rtos (SC3D:MAN-H) 2 2))
+
         (if def
           (progn
             (setq manu (cdr (assoc 'manu def)))
@@ -3299,6 +4284,24 @@ Actualisation terminee.")
             (if (null *SC3D_CUR_HATCH_PAT*) (setq *SC3D_CUR_HATCH_PAT* "ANSI31"))
             (if (null *SC3D_CUR_HATCH_COL*) (setq *SC3D_CUR_HATCH_COL* 1))
             (set_tile "use_hatch" (if (cdr (assoc 'use_hatch def)) "1" "0"))
+
+            ;; Inclinaison manuelle memorisee et son mode, sinon auto (valeur
+            ;; posee par l'apercu).
+            (if (numberp (cdr (assoc 'tilt def)))
+              (progn
+                ;; Mode absent ou inconnu : libre.
+                (set_tile "tilt_mode"
+                  (SC3D:TILT-MODE-INDEX
+                    (if (member (cdr (assoc 'tilt_mode def)) *SC3D_TILT_DRIVE_MODES*)
+                      (cdr (assoc 'tilt_mode def))
+                      "FREE"
+                    )
+                  )
+                )
+                (SC3D:DLG-SET-TILT (cdr (assoc 'tilt def)))
+              )
+              (set_tile "tilt_mode" (SC3D:TILT-MODE-INDEX "AUTO"))
+            )
           )
           (progn
             (set_tile "manu" "0")
@@ -3319,6 +4322,7 @@ Actualisation terminee.")
             (set_tile "show_dist" "1")
             (set_tile "trans" "60")
             (set_tile "use_hatch" "0")
+            (set_tile "tilt_mode" (SC3D:TILT-MODE-INDEX "AUTO"))
             (SC3D:RAND-HATCH)
           )
         )
@@ -3329,10 +4333,21 @@ Actualisation terminee.")
         (mode_tile "btn_regen" (if (= (get_tile "use_hatch") "1") 0 1))
 
         (SC3D:CAM-DLG-APPLY)
+        ;; Active / grise les reglages d'inclinaison et dessine l'apercu.
+        (SC3D:DLG-TILT-MODE)
 
-        (action_tile "source" "(SC3D:CAM-DLG-SOURCE-CHANGED)")
-        (action_tile "manu" "(SC3D:CAM-DLG-UPDATE-MODELS)")
-        (action_tile "model" "(SC3D:CAM-DLG-APPLY)")
+        (action_tile "source" "(SC3D:CAM-DLG-SOURCE-CHANGED)(SC3D:DLG-PREVIEW)")
+        (action_tile "manu" "(SC3D:CAM-DLG-UPDATE-MODELS)(SC3D:DLG-PREVIEW)")
+        (action_tile "model" "(SC3D:CAM-DLG-APPLY)(SC3D:DLG-PREVIEW)")
+        (foreach k '("fmt" "res" "focal" "dist" "camh" "objh" "std")
+          (action_tile k "(SC3D:DLG-PREVIEW)")
+        )
+        (action_tile "tilt_mode" "(SC3D:DLG-TILT-MODE)")
+        (action_tile "man_h" "(SC3D:DLG-MAN-H)")
+        (action_tile "tilt" "(SC3D:DLG-TILT-EDIT)")
+        (action_tile "tilt_sl" "(SC3D:DLG-TILT-SLIDER $value)")
+        (action_tile "tilt_m" "(SC3D:DLG-TILT-STEP -1.0)")
+        (action_tile "tilt_p" "(SC3D:DLG-TILT-STEP 1.0)")
         (action_tile "use_hatch" "(SC3D:DLG-HATCH-UPDATE)")
         (action_tile "btn_regen" "(SC3D:DLG-REGEN-HATCH)")
         (action_tile "accept" "(SC3D:ACCEPT-DLG)")
@@ -4767,7 +5782,9 @@ Actualisation terminee.")
   )
 )
 
-(defun SC3D:DRAW-PPM (resW maxD nearD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay aci rgb d x1 x2)
+(defun SC3D:DRAW-PPM (resW maxD nearD farD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay aci rgb d x1 x2)
+  ;; Zones PPM de nearD a farD (au-dela, la cible sort de l'image par le haut :
+  ;; cf. SC3D:FAR-DIST ; farD = maxD en inclinaison auto).
   (setq lst (SC3D:PPM-LIST standard))
   (setq prev 0.0)
   (setq done nil)
@@ -4781,17 +5798,17 @@ Actualisation terminee.")
         (setq rgb (nth 3 z))
         (setq d (SC3D:PPM-DIST-TOP-OLD ppm resW tanH tilt camH objH))
         (setq x1 (SC3D:MAX prev nearD))
-        (setq x2 (SC3D:MIN d maxD))
+        (setq x2 (SC3D:MIN d farD))
 
         (if (> x2 x1)
           (SC3D:GROUND-BAND x1 x2 maxD tanH tilt camH objH lay aci rgb trans T)
         )
 
-        (if (and (> d nearD) (<= d maxD))
+        (if (and (> d nearD) (<= d farD))
           (SC3D:VERT-RECT d maxD tanH tilt camH objH objH lay aci)
         )
 
-        (if (>= d maxD)
+        (if (>= d farD)
           (setq done T)
           (setq prev d)
         )
@@ -4857,7 +5874,43 @@ Actualisation terminee.")
   )
 )
 
-(defun SC3D:CALC (vals / fmt focal resStr res resW resH aspect sw sh hAng vAng hHalf vHalf tanH tanV maxD camH objH tilt nearD targetWidthMax hAngCam vAngCam)
+(defun SC3D:TILT-AUTO (camH objH maxD vHalf)
+  ;; Inclinaison automatique (convention JVSG) : le haut de l'image passe par
+  ;; le haut de la cible a la distance max.
+  (+ (atan (/ (- camH objH) maxD)) vHalf)
+)
+
+(defun SC3D:NEAR-DIST (camH tilt vHalf maxD / aBot)
+  ;; Distance ou le bas de l'image touche le sol (fin de la zone non visible).
+  ;; Bas de l'image a la verticale ou au-dela : le pied du mat est vu (0).
+  ;; Bas de l'image a l'horizontale ou au-dessus : le sol n'est jamais vu,
+  ;; toute la distance est non visible.
+  (setq aBot (+ tilt vHalf))
+  (cond
+    ((>= aBot (- (/ *SC3D_PI* 2.0) 0.000001)) 0.0)
+    ((<= aBot 0.000001) maxD)
+    (T (/ camH (SC3D:TAN aBot)))
+  )
+)
+
+(defun SC3D:FAR-DIST (camH objH tilt vHalf maxD / aTop)
+  ;; Distance au-dela de laquelle le haut de la cible sort de l'image (le haut
+  ;; de l'image passe sous la hauteur objectif) ; maxD si cela n'arrive pas
+  ;; avant. En inclinaison auto, c'est exactement maxD par construction.
+  (setq aTop (- tilt vHalf))
+  (if (and (> camH objH) (> aTop 0.000001))
+    (SC3D:MIN maxD (/ (- camH objH) (SC3D:TAN aTop)))
+    maxD
+  )
+)
+
+(defun SC3D:FAR-BAND-START (nearD farD maxD)
+  ;; Debut de la zone non visible lointaine (cible coupee en haut), sans
+  ;; recouvrir la zone non visible proche. Egal a maxD s'il n'y en a pas.
+  (SC3D:MIN maxD (SC3D:MAX farD (SC3D:MIN nearD maxD)))
+)
+
+(defun SC3D:CALC (vals / fmt focal resStr res resW resH aspect sw sh hAng vAng hHalf vHalf tanH tanV maxD camH objH tilt tiltMan nearD farD targetWidthMax hAngCam vAngCam)
   (setq fmt    (cdr (assoc 'fmt vals)))
   (setq focal  (cdr (assoc 'focal vals)))
   (setq resStr (cdr (assoc 'res vals)))
@@ -4891,8 +5944,28 @@ Actualisation terminee.")
   (setq tanH (SC3D:TAN hHalf))
   (setq tanV (SC3D:TAN vHalf))
 
-  (setq tilt (+ (atan (/ (- camH objH) maxD)) vHalf))
-  (setq nearD (/ camH (SC3D:TAN (+ tilt vHalf))))
+  ;; Inclinaison manuelle (degres sous l'horizontale) si elle est renseignee,
+  ;; sinon automatique.
+  ;; Modes DIST / OBJH / ROT / CAMH : distance max ou hauteurs calculees depuis
+  ;; l'inclinaison (cf. SC3D:DLG-APPLY-DRIVE), le haut de l'image passe donc
+  ;; sur la cible a la distance max comme en auto (farD = maxD, sans le petit
+  ;; ecart du a l'arrondi des valeurs calculees).
+  (setq tiltMan (cdr (assoc 'tilt vals)))
+  (cond
+    ((not (numberp tiltMan))
+      (setq tilt (SC3D:TILT-AUTO camH objH maxD vHalf)
+            farD maxD)
+    )
+    ((member (cdr (assoc 'tilt_mode vals)) *SC3D_TILT_DRIVE_MODES*)
+      (setq tilt (SC3D:DTR tiltMan)
+            farD maxD)
+    )
+    (T
+      (setq tilt (SC3D:DTR tiltMan)
+            farD (SC3D:FAR-DIST camH objH tilt vHalf maxD))
+    )
+  )
+  (setq nearD (SC3D:NEAR-DIST camH tilt vHalf maxD))
   (setq targetWidthMax (SC3D:FULL-WIDTH-JVSG maxD tanH tilt camH objH))
 
   (list
@@ -4903,6 +5976,7 @@ Actualisation terminee.")
     (cons 'tanV tanV)
     (cons 'tilt tilt)
     (cons 'nearD nearD)
+    (cons 'farD farD)
     (cons 'targetWidthMax targetWidthMax)
     (cons 'hAng hAng)
     (cons 'vAng vAng)
@@ -4943,40 +6017,47 @@ Actualisation terminee.")
   (SC3D:EMIT-HATCH-LOOPS (list pts) patName aci)
 )
 
-(defun SC3D:DRAW-HATCH-FOV (maxD nearD tanH tilt camH objH patName aci / wMax w1 pts grp)
-  (setq wMax (SC3D:HALF-WIDTH-JVSG maxD tanH tilt camH objH))
+(defun SC3D:DRAW-HATCH-FOV (maxD nearD farD tanH tilt camH objH patName aci / wFar w1 pts grp)
+  ;; Hachure unique de nearD a farD (zone ou la cible est entiere dans l'image).
+  (setq wFar (SC3D:CONE-HALF-WIDTH farD maxD tanH tilt camH objH))
 
-  (if (<= nearD 0.0)
-    (setq pts
-      (list
-        (list 0.0 0.0)
-        (list maxD (- wMax))
-        (list maxD wMax)
+  (cond
+    ((<= farD (SC3D:MAX nearD 0.0)) (setq pts nil))
+    ((<= nearD 0.0)
+      (setq pts
+        (list
+          (list 0.0 0.0)
+          (list farD (- wFar))
+          (list farD wFar)
+        )
       )
     )
-    (progn
+    (T
       (setq w1 (SC3D:CONE-HALF-WIDTH nearD maxD tanH tilt camH objH))
       (setq pts
         (list
           (list nearD (- w1))
           (list nearD w1)
-          (list maxD wMax)
-          (list maxD (- wMax))
+          (list farD wFar)
+          (list farD (- wFar))
         )
       )
     )
   )
 
-  (if *SC3D_CLIP_POLY*
-    ;; Une seule hachure sur le contour decoupe (cf. SC3D:CLIP-FLAT-HATCHES).
-    (foreach grp (SC3D:CLIP-FLAT-HATCHES pts)
-      (SC3D:EMIT-HATCH-LOOPS grp patName aci)
+  (cond
+    ((null pts) nil)
+    (*SC3D_CLIP_POLY*
+      ;; Une seule hachure sur le contour decoupe (cf. SC3D:CLIP-FLAT-HATCHES).
+      (foreach grp (SC3D:CLIP-FLAT-HATCHES pts)
+        (SC3D:EMIT-HATCH-LOOPS grp patName aci)
+      )
     )
-    (SC3D:EMIT-HATCH pts patName aci)
+    (T (SC3D:EMIT-HATCH pts patName aci))
   )
 )
 
-(defun SC3D:CREATE-BLOCK-GEOM (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD useHatch hatchPat hatchCol hidden showDist)
+(defun SC3D:CREATE-BLOCK-GEOM (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD farD farStart useHatch hatchPat hatchCol hidden showDist)
   (setq maxD     (cdr (assoc 'dist vals)))
   (setq camH     (cdr (assoc 'camh vals)))
   (setq objH     (cdr (assoc 'objh vals)))
@@ -4988,6 +6069,8 @@ Actualisation terminee.")
   (setq tanV     (cdr (assoc 'tanV calc)))
   (setq tilt     (cdr (assoc 'tilt calc)))
   (setq nearD    (cdr (assoc 'nearD calc)))
+  (setq farD     (cdr (assoc 'farD calc)))
+  (setq farStart (SC3D:FAR-BAND-START nearD farD maxD))
   (setq useHatch (cdr (assoc 'use_hatch vals)))
   (setq hatchPat (cdr (assoc 'hatch_pattern vals)))
   (setq hatchCol (cdr (assoc 'hatch_color vals)))
@@ -5004,22 +6087,26 @@ Actualisation terminee.")
   (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
 
   (if hidden
-    ;; Camera masquee : seule la zone non visible (angle mort pres de la camera) reste affichee.
-    (if (> nearD 0.0)
-      (SC3D:GROUND-BAND
-        0.0
-        (SC3D:MIN nearD maxD)
-        maxD
-        tanH
-        tilt
-        camH
-        objH
-        "SC3D_NON_VISIBLE"
-        1
-        (SC3D:RGB 120 0 0)
-        trans
-        T
+    ;; Camera masquee : seules les zones non visibles (angle mort pres de la
+    ;; camera, et au loin si la cible y sort de l'image) restent affichees.
+    (progn
+      (if (> nearD 0.0)
+        (SC3D:GROUND-BAND
+          0.0
+          (SC3D:MIN nearD maxD)
+          maxD
+          tanH
+          tilt
+          camH
+          objH
+          "SC3D_NON_VISIBLE"
+          1
+          (SC3D:RGB 120 0 0)
+          trans
+          T
+        )
       )
+      (SC3D:GROUND-BAND farStart maxD maxD tanH tilt camH objH "SC3D_NON_VISIBLE" 1 (SC3D:RGB 120 0 0) trans T)
     )
     (progn
       (if (> nearD 0.0)
@@ -5038,11 +6125,13 @@ Actualisation terminee.")
           T
         )
       )
+      ;; Au loin : la cible sort de l'image par le haut (inclinaison manuelle).
+      (SC3D:GROUND-BAND farStart maxD maxD tanH tilt camH objH "SC3D_NON_VISIBLE" 1 (SC3D:RGB 120 0 0) trans T)
 
-      (SC3D:DRAW-PPM resW maxD nearD tanH tanV tilt camH objH standard trans)
+      (SC3D:DRAW-PPM resW maxD nearD farD tanH tanV tilt camH objH standard trans)
 
       (if useHatch
-        (SC3D:DRAW-HATCH-FOV maxD nearD tanH tilt camH objH hatchPat hatchCol)
+        (SC3D:DRAW-HATCH-FOV maxD nearD farD tanH tilt camH objH hatchPat hatchCol)
       )
 
       (if showGrid
@@ -5092,17 +6181,19 @@ Actualisation terminee.")
   (SC3D:P x y 0.0)
 )
 
-(defun SC3D:SIDE-BAND (x1 x2 h lay aci rgb trans hatch / p1 p2 p3 p4)
+(defun SC3D:SIDE-BAND (x1 x2 h lay aci rgb trans hatch / p1 p2 p3 p4 yLo yHi)
+  ;; Bande du sol (0) a la hauteur h ; h negatif (cible en sous-sol) : bande
+  ;; sous le sol, de h a 0. Contour toujours dans le meme sens.
   (if (< x1 0.0) (setq x1 0.0))
   (if (< x2 0.0) (setq x2 0.0))
-  (if (< h 0.0) (setq h 0.0))
+  (setq yLo (SC3D:MIN 0.0 h) yHi (SC3D:MAX 0.0 h))
 
-  (if (> x2 x1)
+  (if (and (> x2 x1) (> yHi yLo))
     (progn
-      (setq p1 (SC3D:SIDE-P x1 0.0))
-      (setq p2 (SC3D:SIDE-P x2 0.0))
-      (setq p3 (SC3D:SIDE-P x2 h))
-      (setq p4 (SC3D:SIDE-P x1 h))
+      (setq p1 (SC3D:SIDE-P x1 yLo))
+      (setq p2 (SC3D:SIDE-P x2 yLo))
+      (setq p3 (SC3D:SIDE-P x2 yHi))
+      (setq p4 (SC3D:SIDE-P x1 yHi))
 
       (if hatch
         (SC3D:ZONE-HATCH p1 p2 p3 p4 lay aci rgb trans)
@@ -5116,7 +6207,8 @@ Actualisation terminee.")
   )
 )
 
-(defun SC3D:SIDE-DRAW-PPM (resW maxD nearD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay aci rgb d x1 x2)
+(defun SC3D:SIDE-DRAW-PPM (resW maxD nearD farD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay aci rgb d x1 x2)
+  ;; Zones PPM de nearD a farD (cf. SC3D:DRAW-PPM).
   (setq lst (SC3D:PPM-LIST standard))
   (setq prev 0.0)
   (setq done nil)
@@ -5130,13 +6222,13 @@ Actualisation terminee.")
         (setq rgb (nth 3 z))
         (setq d (SC3D:PPM-DIST ppm resW tanH tanV tilt camH objH maxD))
         (setq x1 (SC3D:MAX prev nearD))
-        (setq x2 (SC3D:MIN d maxD))
+        (setq x2 (SC3D:MIN d farD))
 
         (if (> x2 x1)
           (SC3D:SIDE-BAND x1 x2 objH lay aci rgb trans T)
         )
 
-        (if (>= d maxD)
+        (if (>= d farD)
           (setq done T)
           (setq prev d)
         )
@@ -5145,16 +6237,18 @@ Actualisation terminee.")
   )
 )
 
-(defun SC3D:SIDE-GRID (maxD camH objH tilt vHalf / yMax yTop i)
+(defun SC3D:SIDE-GRID (maxD camH objH tilt vHalf / yMax yMin yTop i)
   (setq yMax (SC3D:SIDE-YMAX maxD camH objH tilt vHalf))
+  ;; Cible en sous-sol : la grille descend jusqu'a la hauteur objectif.
+  (setq yMin (if (< objH 0.0) (float (fix (- objH 0.999))) 0.0))
 
   (setq i 0.0)
   (while (<= i maxD)
-    (SC3D:LINE (SC3D:SIDE-P i 0.0) (SC3D:SIDE-P i yMax) "SC3D_GRILLE" 8)
+    (SC3D:LINE (SC3D:SIDE-P i yMin) (SC3D:SIDE-P i yMax) "SC3D_GRILLE" 8)
     (setq i (+ i 1.0))
   )
 
-  (setq i 0.0)
+  (setq i yMin)
   (while (<= i yMax)
     (SC3D:LINE (SC3D:SIDE-P 0.0 i) (SC3D:SIDE-P maxD i) "SC3D_GRILLE" 8)
     (setq i (+ i 1.0))
@@ -5240,8 +6334,11 @@ Actualisation terminee.")
   ;; Rayon haut du champ de vision.
   (SC3D:LINE (SC3D:SIDE-P 0.0 camH) (SC3D:SIDE-P maxD topY) "SC3D_RAYONS" 4)
 
-  ;; Rayon bas du champ de vision.
-  (SC3D:LINE (SC3D:SIDE-P 0.0 camH) (SC3D:SIDE-P botX botY) "SC3D_RAYONS" 4)
+  ;; Rayon bas du champ de vision (absent si le bas de l'image passe sous le
+  ;; mat : inclinaison manuelle tres plongeante, aucune zone non visible).
+  (if (> botX 0.0)
+    (SC3D:LINE (SC3D:SIDE-P 0.0 camH) (SC3D:SIDE-P botX botY) "SC3D_RAYONS" 4)
+  )
 
   ;; Cible a la distance max
   (SC3D:LINE (SC3D:SIDE-P maxD 0.0) (SC3D:SIDE-P maxD objH) "SC3D_RAYONS" 1)
@@ -5254,7 +6351,7 @@ Actualisation terminee.")
   (SC3D:TEXT-LOCAL (SC3D:SIDE-P 0.65 (+ camH 0.45)) 0.25 (strcat (rtos angleDeg 2 1) "°") "SC3D_TEXTES" 2 0.0)
 )
 
-(defun SC3D:CREATE-BLOCK-GEOM-SIDE (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD vHalf hidden showDist)
+(defun SC3D:CREATE-BLOCK-GEOM-SIDE (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD farD farStart vHalf hidden showDist)
   (setq maxD     (cdr (assoc 'dist vals)))
   (setq camH     (cdr (assoc 'camh vals)))
   (setq objH     (cdr (assoc 'objh vals)))
@@ -5266,6 +6363,8 @@ Actualisation terminee.")
   (setq tanV     (cdr (assoc 'tanV calc)))
   (setq tilt     (cdr (assoc 'tilt calc)))
   (setq nearD    (cdr (assoc 'nearD calc)))
+  (setq farD     (cdr (assoc 'farD calc)))
+  (setq farStart (SC3D:FAR-BAND-START nearD farD maxD))
   (setq vHalf    (/ (SC3D:DTR (cdr (assoc 'vAng calc))) 2.0))
   (setq hidden   (cdr (assoc 'hidden vals)))
   ;; Absent (anciennes configs) = affiche par defaut.
@@ -5277,18 +6376,22 @@ Actualisation terminee.")
   (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
 
   (if hidden
-    ;; Camera masquee : seule la zone non visible (angle mort pres de la camera) reste affichee.
-    (if (> nearD 0.0)
-      (SC3D:SIDE-BAND
-        0.0
-        (SC3D:MIN nearD maxD)
-        objH
-        "SC3D_NON_VISIBLE"
-        1
-        (SC3D:RGB 120 0 0)
-        trans
-        T
+    ;; Camera masquee : seules les zones non visibles (angle mort pres de la
+    ;; camera, et au loin si la cible y sort de l'image) restent affichees.
+    (progn
+      (if (> nearD 0.0)
+        (SC3D:SIDE-BAND
+          0.0
+          (SC3D:MIN nearD maxD)
+          objH
+          "SC3D_NON_VISIBLE"
+          1
+          (SC3D:RGB 120 0 0)
+          trans
+          T
+        )
       )
+      (SC3D:SIDE-BAND farStart maxD objH "SC3D_NON_VISIBLE" 1 (SC3D:RGB 120 0 0) trans T)
     )
     (progn
       (if (> nearD 0.0)
@@ -5303,8 +6406,10 @@ Actualisation terminee.")
           T
         )
       )
+      ;; Au loin : la cible sort de l'image par le haut (inclinaison manuelle).
+      (SC3D:SIDE-BAND farStart maxD objH "SC3D_NON_VISIBLE" 1 (SC3D:RGB 120 0 0) trans T)
 
-      (SC3D:SIDE-DRAW-PPM resW maxD nearD tanH tanV tilt camH objH standard trans)
+      (SC3D:SIDE-DRAW-PPM resW maxD nearD farD tanH tanV tilt camH objH standard trans)
 
       (if showGrid
         (SC3D:SIDE-GRID maxD camH objH tilt vHalf)
@@ -5545,6 +6650,9 @@ Actualisation terminee.")
   (princ (strcat "\nVue de cote creee."))
   (princ (strcat "\nAngle vertical : " (rtos (cdr (assoc 'vAng calc)) 2 2) " deg"))
   (princ (strcat "\nZone non visible : 0 a " (rtos (cdr (assoc 'nearD calc)) 2 2) " m"))
+  (if (< (cdr (assoc 'farD calc)) (cdr (assoc 'dist vals)))
+    (princ (strcat "\nCible hors image (haut) au-dela de " (rtos (cdr (assoc 'farD calc)) 2 2) " m"))
+  )
 
   ins
 )
@@ -5628,13 +6736,20 @@ Actualisation terminee.")
                   (setq maxD (cdr (assoc 'dist vals)))
                   (setq standard (cdr (assoc 'std vals)))
 
-                  (if (< d nearD)
-                    (progn
+                  (cond
+                    ((< d nearD)
                       (princ (strcat "\nDistance : " (rtos d 2 2)))
                       (princ (strcat "\nPPM associe : non visible"))
                       (princ (strcat "\nZone non visible : 0 a " (rtos nearD 2 2)))
                     )
-                    (progn
+                    ;; Inclinaison manuelle : au-dela de farD, le haut de la
+                    ;; cible sort de l'image.
+                    ((and (> d (cdr (assoc 'farD calc))) (< (cdr (assoc 'farD calc)) maxD))
+                      (princ (strcat "\nDistance : " (rtos d 2 2)))
+                      (princ (strcat "\nPPM associe : non visible (haut de la cible hors image)"))
+                      (princ (strcat "\nCible entiere visible jusqu'a " (rtos (cdr (assoc 'farD calc)) 2 2) " m"))
+                    )
+                    (T
                       (setq ppm (SC3D:PPM-AT-DIST d vals calc))
 
                       (if ppm
@@ -8026,14 +9141,15 @@ Actualisation terminee.")
     nil
     (if (= view "SIDE")
       (progn
-        ;; Vue de cote : x = distance, y = hauteur (du sol au plus haut des trois
-        ;; reperes : hauteur camera, hauteur objet, rayon haut a la distance max).
+        ;; Vue de cote : x = distance, y = hauteur (du sol, ou de la hauteur
+        ;; objet si elle est negative, au plus haut des trois reperes : hauteur
+        ;; camera, hauteur objet, rayon haut a la distance max).
         (setq vHalf (/ (SC3D:DTR (cdr (assoc 'vAng calc))) 2.0))
         (setq topY (SC3D:SIDE-TOP-Y maxD camH tilt vHalf))
         (setq yTop (SC3D:MAX camH (SC3D:MAX objH (SC3D:MAX topY 0.0))))
         (list
-          (list 0.0 0.0)
-          (list maxD 0.0)
+          (list 0.0 (SC3D:MIN 0.0 objH))
+          (list maxD (SC3D:MIN 0.0 objH))
           (list maxD yTop)
           (list 0.0 yTop)
         )
