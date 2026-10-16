@@ -2986,7 +2986,7 @@ Actualisation terminee.")
   (write-line "      label = \"4. Affichage\";" f)
   (write-line "      : popup_list { key = \"view\"; label = \"Vue\"; width = 22; }" f)
   (write-line "      : toggle { key = \"grid\"; label = \"Afficher la grille\"; }" f)
-  (write-line "      : toggle { key = \"show_dist\"; label = \"Afficher les metres dans l'axe\"; }" f)
+  (write-line "      : toggle { key = \"show_dist\"; label = \"Afficher les metres (axe et frontieres PPM)\"; }" f)
   (write-line "      : edit_box { key = \"trans\"; label = \"Transparence (0-90%)\"; edit_width = 10; }" f)
   (write-line "      : toggle { key = \"use_hatch\"; label = \"Hachure unique (vue du dessus, au lieu des zones PPM)\"; }" f)
   (write-line "      : row {" f)
@@ -3911,16 +3911,22 @@ Actualisation terminee.")
       ;; Echelle identique en X et Y (angles reels), cadre : un peu derriere la
       ;; camera jusqu'un peu apres la distance max, et du sol (ou de la cible si
       ;; elle est sous le sol) a la plus haute des hauteurs camera / cible /
-      ;; personnage. Les 46 px du bas de l'image sont reserves aux distances
-      ;; ecrites : graduations (base + 14), puis frontieres PPM sur deux lignes
-      ;; (base + 25 et base + 37). Bande PPM de 8 px sous le sol.
+      ;; personnage. Les distances sont ecrites juste sous le sol, meme si la
+      ;; cible est plus bas : graduations (sol + 14 px), puis frontieres PPM sur
+      ;; deux lignes (sol + 25 et sol + 37). Il faut donc au moins 46 px sous le
+      ;; sol, et de quoi descendre jusqu'a la cible. Bande PPM de 8 px sous le sol.
       (setq xLo (- (SC3D:MAX 1.0 (* 0.05 maxD))))
       (setq xHi (+ maxD (SC3D:MAX 1.5 (* 0.06 maxD))))
       (setq yTop (+ (SC3D:MAX camH (SC3D:MAX objH *SC3D_PRV_MAN_H*)) 0.8))
       (setq yBot (if (< objH 0.0) (- objH 0.5) 0.0))
-      (setq base (- h 46.0))
-      (setq s (SC3D:MIN (/ (- w 8.0) (- xHi xLo)) (/ (- base 4.0) (- yTop yBot))))
-      (setq gnd (+ base (* s yBot)))
+      (setq s
+        (SC3D:MIN
+          (/ (- w 8.0) (- xHi xLo))
+          (SC3D:MIN (/ (- h 50.0) yTop) (/ (- h 8.0) (- yTop yBot)))
+        )
+      )
+      (setq gnd (- h (SC3D:MAX 46.0 (+ (* s (- yBot)) 4.0))))
+      (setq base gnd)
       (setq ox (+ 4.0 (/ (- (- w 8.0) (* s (- xHi xLo))) 2.0) (- (* s xLo))))
       (setq *SC3D_PRV* (list ox gnd s w h))
       (setq *SC3D_PRV_VALS* vals)
@@ -5782,12 +5788,14 @@ Actualisation terminee.")
   )
 )
 
-(defun SC3D:DRAW-PPM (resW maxD nearD farD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay aci rgb d x1 x2)
+(defun SC3D:DRAW-PPM (resW maxD nearD farD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay aci rgb d x1 x2 bounds)
   ;; Zones PPM de nearD a farD (au-dela, la cible sort de l'image par le haut :
   ;; cf. SC3D:FAR-DIST ; farD = maxD en inclinaison auto).
+  ;; Renvoie les frontieres des zones (cf. SC3D:PPM-BOUNDS-END).
   (setq lst (SC3D:PPM-LIST standard))
   (setq prev 0.0)
   (setq done nil)
+  (setq bounds nil)
 
   (foreach z lst
     (if (not done)
@@ -5801,7 +5809,10 @@ Actualisation terminee.")
         (setq x2 (SC3D:MIN d farD))
 
         (if (> x2 x1)
-          (SC3D:GROUND-BAND x1 x2 maxD tanH tilt camH objH lay aci rgb trans T)
+          (progn
+            (SC3D:GROUND-BAND x1 x2 maxD tanH tilt camH objH lay aci rgb trans T)
+            (if (> x1 0.05) (setq bounds (SC3D:PRV-ADD-BOUND x1 aci bounds)))
+          )
         )
 
         (if (and (> d nearD) (<= d farD))
@@ -5813,6 +5824,46 @@ Actualisation terminee.")
           (setq prev d)
         )
       )
+    )
+  )
+  (SC3D:PPM-BOUNDS-END bounds nearD farD maxD)
+)
+
+(defun SC3D:PPM-BOUNDS-END (bounds nearD farD maxD / farStart)
+  ;; Complete les frontieres notees par SC3D:(SIDE-)DRAW-PPM (debut de chaque
+  ;; zone, (distance . couleur ACI), la plus loin en tete) avec le debut de la
+  ;; zone non visible lointaine, et les remet dans l'ordre des distances.
+  (setq farStart (SC3D:FAR-BAND-START nearD farD maxD))
+  (if (< farStart (- maxD 0.05))
+    (setq bounds (SC3D:PRV-ADD-BOUND farStart 1 bounds))
+  )
+  (reverse bounds)
+)
+
+(defun SC3D:PPM-BOUND-TEXT (x)
+  (strcat (rtos x 2 1) "m")
+)
+
+(defun SC3D:DRAW-PPM-BOUND-LABELS (bounds maxD tanH tilt camH objH / b w)
+  ;; Vue du dessus : distance de chaque frontiere de zone, ecrite le long de
+  ;; la frontiere, juste apres elle, dans la moitie du champ opposee aux metres
+  ;; de l'axe (cf. SC3D:DRAW-DIST-LABELS).
+  (foreach b bounds
+    (setq w (SC3D:CONE-HALF-WIDTH (car b) maxD tanH tilt camH objH))
+    (SC3D:TEXT-LOCAL
+      (SC3D:P (+ (car b) 0.2) (- (/ w 2.0)) 0.05)
+      0.25 (SC3D:PPM-BOUND-TEXT (car b)) "SC3D_TEXTES" 7 (/ *SC3D_PI* 2.0)
+    )
+  )
+)
+
+(defun SC3D:SIDE-PPM-BOUND-LABELS (bounds objH / b)
+  ;; Vue de cote : distance de chaque frontiere de zone, ecrite le long de la
+  ;; frontiere, juste apres elle, a mi-hauteur de la bande.
+  (foreach b bounds
+    (SC3D:TEXT-LOCAL
+      (SC3D:SIDE-P (+ (car b) 0.2) (/ objH 2.0))
+      0.25 (SC3D:PPM-BOUND-TEXT (car b)) "SC3D_TEXTES" 7 (/ *SC3D_PI* 2.0)
     )
   )
 )
@@ -6057,7 +6108,7 @@ Actualisation terminee.")
   )
 )
 
-(defun SC3D:CREATE-BLOCK-GEOM (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD farD farStart useHatch hatchPat hatchCol hidden showDist)
+(defun SC3D:CREATE-BLOCK-GEOM (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD farD farStart useHatch hatchPat hatchCol hidden showDist bounds)
   (setq maxD     (cdr (assoc 'dist vals)))
   (setq camH     (cdr (assoc 'camh vals)))
   (setq objH     (cdr (assoc 'objh vals)))
@@ -6128,7 +6179,7 @@ Actualisation terminee.")
       ;; Au loin : la cible sort de l'image par le haut (inclinaison manuelle).
       (SC3D:GROUND-BAND farStart maxD maxD tanH tilt camH objH "SC3D_NON_VISIBLE" 1 (SC3D:RGB 120 0 0) trans T)
 
-      (SC3D:DRAW-PPM resW maxD nearD farD tanH tanV tilt camH objH standard trans)
+      (setq bounds (SC3D:DRAW-PPM resW maxD nearD farD tanH tanV tilt camH objH standard trans))
 
       (if useHatch
         (SC3D:DRAW-HATCH-FOV maxD nearD farD tanH tilt camH objH hatchPat hatchCol)
@@ -6141,7 +6192,10 @@ Actualisation terminee.")
       (SC3D:CAMERA-SYMBOL camH)
       (SC3D:DRAW-FRUSTUM maxD camH objH tilt tanH tanV)
       (if showDist
-        (SC3D:DRAW-DIST-LABELS maxD)
+        (progn
+          (SC3D:DRAW-DIST-LABELS maxD)
+          (SC3D:DRAW-PPM-BOUND-LABELS bounds maxD tanH tilt camH objH)
+        )
       )
       (SC3D:VERT-RECT maxD maxD tanH tilt camH objH objH "SC3D_RAYONS" 4)
 
@@ -6207,11 +6261,12 @@ Actualisation terminee.")
   )
 )
 
-(defun SC3D:SIDE-DRAW-PPM (resW maxD nearD farD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay aci rgb d x1 x2)
-  ;; Zones PPM de nearD a farD (cf. SC3D:DRAW-PPM).
+(defun SC3D:SIDE-DRAW-PPM (resW maxD nearD farD tanH tanV tilt camH objH standard trans / lst prev done z ppm lay aci rgb d x1 x2 bounds)
+  ;; Zones PPM de nearD a farD (cf. SC3D:DRAW-PPM). Renvoie leurs frontieres.
   (setq lst (SC3D:PPM-LIST standard))
   (setq prev 0.0)
   (setq done nil)
+  (setq bounds nil)
 
   (foreach z lst
     (if (not done)
@@ -6225,7 +6280,10 @@ Actualisation terminee.")
         (setq x2 (SC3D:MIN d farD))
 
         (if (> x2 x1)
-          (SC3D:SIDE-BAND x1 x2 objH lay aci rgb trans T)
+          (progn
+            (SC3D:SIDE-BAND x1 x2 objH lay aci rgb trans T)
+            (if (> x1 0.05) (setq bounds (SC3D:PRV-ADD-BOUND x1 aci bounds)))
+          )
         )
 
         (if (>= d farD)
@@ -6235,6 +6293,7 @@ Actualisation terminee.")
       )
     )
   )
+  (SC3D:PPM-BOUNDS-END bounds nearD farD maxD)
 )
 
 (defun SC3D:SIDE-GRID (maxD camH objH tilt vHalf / yMax yMin yTop i)
@@ -6351,7 +6410,7 @@ Actualisation terminee.")
   (SC3D:TEXT-LOCAL (SC3D:SIDE-P 0.65 (+ camH 0.45)) 0.25 (strcat (rtos angleDeg 2 1) "°") "SC3D_TEXTES" 2 0.0)
 )
 
-(defun SC3D:CREATE-BLOCK-GEOM-SIDE (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD farD farStart vHalf hidden showDist)
+(defun SC3D:CREATE-BLOCK-GEOM-SIDE (blockName vals calc / maxD camH objH standard showGrid trans resW tanH tanV tilt nearD farD farStart vHalf hidden showDist bounds)
   (setq maxD     (cdr (assoc 'dist vals)))
   (setq camH     (cdr (assoc 'camh vals)))
   (setq objH     (cdr (assoc 'objh vals)))
@@ -6409,7 +6468,7 @@ Actualisation terminee.")
       ;; Au loin : la cible sort de l'image par le haut (inclinaison manuelle).
       (SC3D:SIDE-BAND farStart maxD objH "SC3D_NON_VISIBLE" 1 (SC3D:RGB 120 0 0) trans T)
 
-      (SC3D:SIDE-DRAW-PPM resW maxD nearD farD tanH tanV tilt camH objH standard trans)
+      (setq bounds (SC3D:SIDE-DRAW-PPM resW maxD nearD farD tanH tanV tilt camH objH standard trans))
 
       (if showGrid
         (SC3D:SIDE-GRID maxD camH objH tilt vHalf)
@@ -6420,7 +6479,10 @@ Actualisation terminee.")
       (SC3D:SIDE-CAMERA-SYMBOL camH tilt)
       (SC3D:SIDE-DRAW-FRUSTUM maxD camH objH tilt vHalf nearD)
       (if showDist
-        (SC3D:SIDE-DIST-LABELS maxD camH objH)
+        (progn
+          (SC3D:SIDE-DIST-LABELS maxD camH objH)
+          (SC3D:SIDE-PPM-BOUND-LABELS bounds objH)
+        )
       )
 
       (if *SC3D_CLIP_POLY*
