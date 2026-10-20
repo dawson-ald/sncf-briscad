@@ -6696,7 +6696,6 @@ Actualisation terminee.")
 
   (append
     (list
-      (cons "MODIFICATION" "S_CAMERA > Modifier (lecture seule ici)")
       (cons "NOM_CHAMP" (SC3D:INFO-STR (cdr (assoc 'cvname vals))))
       (cons "SITUATION" (SC3D:SIT-CODE->LABEL (cdr (assoc 'situation vals))))
       (cons "VUE" (SC3D:VIEW-CODE->LABEL (cdr (assoc 'view vals))))
@@ -6861,17 +6860,28 @@ Actualisation terminee.")
   n
 )
 
-(defun SC3D:INFO-ADD-ATTRIBS (cam / ed name echo)
+(defun SC3D:INFO-TAGS-OK-P (cam defs)
+  ;; T si les attributs de cam sont exactement ceux des definitions defs.
+  (equal
+    (mapcar '(lambda (a) (cdr (assoc 2 (entget a)))) (SC3D:INFO-ATTRIBS cam))
+    (mapcar 'car defs)
+  )
+)
+
+(defun SC3D:INFO-ADD-ATTRIBS (cam / ed name defs echo)
   ;; Camera d'une version precedente : son bloc, redefini par
-  ;; SC3D:REGEN-CAMERA-GEOM, a les definitions d'attributs, mais pas l'INSERT
-  ;; (entmod ne peut pas lui en ajouter). ATTSYNC les ajoute sans recreer la
-  ;; camera : handle, ordre de trace et liens (repere nom, calque dedie)
-  ;; conserves. Uniquement dans une commande, hors boite de dialogue et hors
-  ;; reacteur ((command) y est interdit).
-  ;; Renvoie "ADDED", "FAILED", ou nil (attributs deja la, ou rien a ajouter).
+  ;; SC3D:REGEN-CAMERA-GEOM, a les definitions d'attributs actuelles, mais
+  ;; l'INSERT n'a pas les attributs correspondants (aucun, ou une liste
+  ;; d'informations differente) et entmod ne peut pas en ajouter ni en retirer.
+  ;; ATTSYNC les met en accord sans recreer la camera : handle, ordre de trace
+  ;; et liens (repere nom, calque dedie) conserves. Uniquement dans une
+  ;; commande, hors boite de dialogue et hors reacteur ((command) y est
+  ;; interdit).
+  ;; Renvoie "ADDED", "FAILED", ou nil (attributs deja a jour, ou rien a faire).
   (setq ed (entget cam))
   (setq name (cdr (assoc 2 ed)))
-  (if (and (/= (cdr (assoc 66 ed)) 1) (SC3D:INFO-BLOCK-DEFAULTS name))
+  (setq defs (SC3D:INFO-BLOCK-DEFAULTS name))
+  (if (and defs (not (SC3D:INFO-TAGS-OK-P cam defs)))
     (progn
       (setq echo (getvar "CMDECHO"))
       (setvar "CMDECHO" 0)
@@ -6890,7 +6900,7 @@ Actualisation terminee.")
         nil
       )
       (setvar "CMDECHO" echo)
-      (if (= (cdr (assoc 66 (entget cam))) 1)
+      (if (SC3D:INFO-TAGS-OK-P cam defs)
         (progn
           (SC3D:INFO-SYNC cam)
           "ADDED"
@@ -8264,7 +8274,7 @@ Actualisation terminee.")
     )
   )
   (if (> added 0)
-    (princ (strcat "\nInformations du panneau Proprietes ajoutees a " (itoa added) " camera(s)."))
+    (princ (strcat "\nInformations du panneau Proprietes mises a jour sur " (itoa added) " camera(s)."))
   )
   (if (> failed 0)
     (princ
