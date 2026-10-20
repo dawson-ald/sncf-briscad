@@ -6775,11 +6775,12 @@ Actualisation terminee.")
 )
 
 (defun SC3D:INFO-BLOCK-DEFAULTS (blockName / e ed out)
-  ;; (etiquette . valeur) des definitions d'attributs en tete du bloc ; nil
-  ;; pour un bloc camera d'une version precedente.
+  ;; (ETIQUETTE . valeur) des definitions d'attributs en tete du bloc, etiquette
+  ;; en majuscules (comparaisons insensibles a la casse : BricsCAD peut la
+  ;; mettre en majuscules) ; nil pour un bloc camera d'une version precedente.
   (setq e (cdr (assoc -2 (tblsearch "BLOCK" blockName))))
   (while (and e (setq ed (entget e)) (= (cdr (assoc 0 ed)) "ATTDEF"))
-    (setq out (cons (cons (cdr (assoc 2 ed)) (cdr (assoc 1 ed))) out))
+    (setq out (cons (cons (strcase (cdr (assoc 2 ed))) (cdr (assoc 1 ed))) out))
     (setq e (entnext e))
   )
   (reverse out)
@@ -6847,18 +6848,11 @@ Actualisation terminee.")
   ;; renvoie le nombre d'attributs corriges.
   (setq ed (entget cam))
   (setq lay (cdr (assoc 8 ed)))
-  ;; Etiquettes comparees sans tenir compte de la casse (BricsCAD peut les
-  ;; mettre en majuscules).
-  (setq defs
-    (mapcar
-      '(lambda (d) (cons (strcase (car d)) (cdr d)))
-      (SC3D:INFO-BLOCK-DEFAULTS (cdr (assoc 2 ed)))
-    )
-  )
+  (setq defs (SC3D:INFO-BLOCK-DEFAULTS (cdr (assoc 2 ed))))
   (setq n 0)
   (foreach a (SC3D:INFO-ATTRIBS cam)
     (setq sed (entget a))
-    (setq val (cdr (assoc (strcase (cdr (assoc 2 sed))) defs)))
+    (setq val (cdr (assoc (cdr (assoc 2 sed)) defs)))
     (if
       (and
         val
@@ -6883,8 +6877,8 @@ Actualisation terminee.")
 (defun SC3D:INFO-TAGS-OK-P (cam defs)
   ;; T si les attributs de cam sont exactement ceux des definitions defs.
   (equal
-    (mapcar '(lambda (a) (strcase (cdr (assoc 2 (entget a))))) (SC3D:INFO-ATTRIBS cam))
-    (mapcar '(lambda (d) (strcase (car d))) defs)
+    (mapcar '(lambda (a) (cdr (assoc 2 (entget a)))) (SC3D:INFO-ATTRIBS cam))
+    (mapcar 'car defs)
   )
 )
 
@@ -6923,9 +6917,6 @@ Actualisation terminee.")
       (if (SC3D:INFO-TAGS-OK-P cam defs)
         (progn
           (SC3D:INFO-SYNC cam)
-          ;; Attributs recrees par ATTSYNC : a surveiller de nouveau (cf.
-          ;; SC3D:INFO-WATCH, appele ensuite par SC3D:REGEN-CAMERAS).
-          (setq *SC3D_INFO_WATCHED* (vl-remove (cdr (assoc 5 ed)) *SC3D_INFO_WATCHED*))
           "ADDED"
         )
         "FAILED"
