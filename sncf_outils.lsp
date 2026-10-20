@@ -6687,7 +6687,8 @@ Actualisation terminee.")
 
 (defun SC3D:INFO-LIST (vals calc / maxD nearD farD ppm zone)
   ;; Informations du panneau Proprietes, dans l'ordre d'affichage : liste de
-  ;; (etiquette . valeur). calc = (SC3D:CALC vals).
+  ;; (nom . valeur), le nom etant l'etiquette de l'attribut, affichee telle
+  ;; quelle dans le panneau (cf. SC3D:INFO-ATTDEFS). calc = (SC3D:CALC vals).
   (setq maxD  (cdr (assoc 'dist vals)))
   (setq nearD (cdr (assoc 'nearD calc)))
   (setq farD  (cdr (assoc 'farD calc)))
@@ -6696,34 +6697,34 @@ Actualisation terminee.")
 
   (append
     (list
-      (cons "NOM_CHAMP" (SC3D:INFO-STR (cdr (assoc 'cvname vals))))
-      (cons "SITUATION" (SC3D:SIT-CODE->LABEL (cdr (assoc 'situation vals))))
-      (cons "VUE" (SC3D:VIEW-CODE->LABEL (cdr (assoc 'view vals))))
-      (cons "FABRICANT" (SC3D:INFO-STR (cdr (assoc 'manu vals))))
-      (cons "MODELE" (SC3D:INFO-STR (cdr (assoc 'model vals))))
-      (cons "CAPTEUR" (SC3D:INFO-STR (cdr (assoc 'fmt vals))))
-      (cons "FOCALE" (strcat (rtos (cdr (assoc 'focal vals)) 2 1) " mm"))
-      (cons "RESOLUTION" (SC3D:INFO-STR (cdr (assoc 'res vals))))
-      (cons "ANGLE_H" (strcat (rtos (cdr (assoc 'hAng calc)) 2 1) "°"))
-      (cons "ANGLE_V" (strcat (rtos (cdr (assoc 'vAng calc)) 2 1) "°"))
-      (cons "INCLINAISON"
+      (cons "Nom du champ" (SC3D:INFO-STR (cdr (assoc 'cvname vals))))
+      (cons "Situation" (SC3D:SIT-CODE->LABEL (cdr (assoc 'situation vals))))
+      (cons "Vue" (SC3D:VIEW-CODE->LABEL (cdr (assoc 'view vals))))
+      (cons "Fabricant" (SC3D:INFO-STR (cdr (assoc 'manu vals))))
+      (cons "Modele" (SC3D:INFO-STR (cdr (assoc 'model vals))))
+      (cons "Capteur" (SC3D:INFO-STR (cdr (assoc 'fmt vals))))
+      (cons "Focale" (strcat (rtos (cdr (assoc 'focal vals)) 2 1) " mm"))
+      (cons "Resolution" (SC3D:INFO-STR (cdr (assoc 'res vals))))
+      (cons "Angle horizontal" (strcat (rtos (cdr (assoc 'hAng calc)) 2 1) "°"))
+      (cons "Angle vertical" (strcat (rtos (cdr (assoc 'vAng calc)) 2 1) "°"))
+      (cons "Inclinaison"
         (strcat
           (rtos (SC3D:RTD (cdr (assoc 'tilt calc))) 2 1) "°"
           (if (= (cdr (assoc 'tilt_mode vals)) "AUTO") " (auto)" "")
         )
       )
-      (cons "HAUTEUR_CAMERA" (strcat (rtos (cdr (assoc 'camh vals)) 2 2) " m"))
-      (cons "HAUTEUR_OBJECTIF" (strcat (rtos (cdr (assoc 'objh vals)) 2 2) " m"))
-      (cons "DISTANCE_MAX" (strcat (rtos maxD 2 2) " m"))
-      (cons "LARGEUR_DIST_MAX" (strcat (rtos (cdr (assoc 'targetWidthMax calc)) 2 2) " m"))
-      (cons "PPM_DIST_MAX" (SC3D:PPM-MAX-TEXT ppm zone))
-      (cons "NON_VISIBLE" (SC3D:BLIND-TEXT nearD (SC3D:FAR-BAND-START nearD farD maxD) maxD))
-      (cons "NORME_DORI" (SC3D:INFO-STR (cdr (assoc 'std vals))))
+      (cons "Hauteur camera" (strcat (rtos (cdr (assoc 'camh vals)) 2 2) " m"))
+      (cons "Hauteur objectif" (strcat (rtos (cdr (assoc 'objh vals)) 2 2) " m"))
+      (cons "Distance max" (strcat (rtos maxD 2 2) " m"))
+      (cons "Largeur a la distance max" (strcat (rtos (cdr (assoc 'targetWidthMax calc)) 2 2) " m"))
+      (cons "PPM a la distance max" (SC3D:PPM-MAX-TEXT ppm zone))
+      (cons "Zone non visible" (SC3D:BLIND-TEXT nearD (SC3D:FAR-BAND-START nearD farD maxD) maxD))
+      (cons "Norme DORI" (SC3D:INFO-STR (cdr (assoc 'std vals))))
     )
     (mapcar
       '(lambda (z)
         (cons
-          (strcat "ZONE_PPM_" (rtos (car z) 2 0))
+          (strcat "Zone PPM " (rtos (car z) 2 0))
           (if (cdr z)
             (strcat (rtos (cadr z) 2 1) " a " (rtos (cddr z) 2 1) " m")
             "-"
@@ -6735,27 +6736,39 @@ Actualisation terminee.")
   )
 )
 
+(defun SC3D:INFO-SAFE-TAG (s)
+  ;; Etiquette d'attribut "classique" (majuscules, sans espace ni point).
+  (SC3D:REPL (SC3D:REPL (strcase s) " " "_") "." "")
+)
+
+(defun SC3D:INFO-ATTDEF-DXF (tag prompt val)
+  (list
+    '(0 . "ATTDEF")
+    '(8 . "0")
+    '(10 0.0 0.0 0.0)
+    (cons 40 *SC3D_INFO_TEXTH*)
+    (cons 1 val)
+    '(7 . "STANDARD")
+    (cons 3 prompt)
+    (cons 2 tag)
+    '(70 . 9)
+  )
+)
+
 (defun SC3D:INFO-ATTDEFS (vals calc / lst)
   ;; Definitions d'attributs du bloc camera en cours de definition, a creer
   ;; juste apres son en-tete BLOCK (cf. SC3D:INFO-BLOCK-DEFAULTS) : invisibles,
   ;; predefinies (aucune question a l'insertion), valeur par defaut = valeur
   ;; actuelle. Une erreur de calcul ne doit pas empecher de dessiner la camera :
   ;; elle n'a alors simplement pas d'informations.
+  ;; L'etiquette est le nom lisible ("Nom du champ"), que le panneau Proprietes
+  ;; affiche ; la commande ATTDEF n'en accepterait pas (espaces), entmake si.
+  ;; Refusee malgre tout : etiquette classique ("NOM_DU_CHAMP").
   (setq lst (vl-catch-all-apply 'SC3D:INFO-LIST (list vals calc)))
   (if (not (vl-catch-all-error-p lst))
     (foreach a lst
-      (entmake
-        (list
-          '(0 . "ATTDEF")
-          '(8 . "0")
-          '(10 0.0 0.0 0.0)
-          (cons 40 *SC3D_INFO_TEXTH*)
-          (cons 1 (cdr a))
-          '(7 . "STANDARD")
-          (cons 3 (car a))
-          (cons 2 (car a))
-          '(70 . 9)
-        )
+      (if (not (entmake (SC3D:INFO-ATTDEF-DXF (car a) (car a) (cdr a))))
+        (entmake (SC3D:INFO-ATTDEF-DXF (SC3D:INFO-SAFE-TAG (car a)) (car a) (cdr a)))
       )
     )
   )
@@ -6834,11 +6847,18 @@ Actualisation terminee.")
   ;; renvoie le nombre d'attributs corriges.
   (setq ed (entget cam))
   (setq lay (cdr (assoc 8 ed)))
-  (setq defs (SC3D:INFO-BLOCK-DEFAULTS (cdr (assoc 2 ed))))
+  ;; Etiquettes comparees sans tenir compte de la casse (BricsCAD peut les
+  ;; mettre en majuscules).
+  (setq defs
+    (mapcar
+      '(lambda (d) (cons (strcase (car d)) (cdr d)))
+      (SC3D:INFO-BLOCK-DEFAULTS (cdr (assoc 2 ed)))
+    )
+  )
   (setq n 0)
   (foreach a (SC3D:INFO-ATTRIBS cam)
     (setq sed (entget a))
-    (setq val (cdr (assoc (cdr (assoc 2 sed)) defs)))
+    (setq val (cdr (assoc (strcase (cdr (assoc 2 sed))) defs)))
     (if
       (and
         val
@@ -6863,8 +6883,8 @@ Actualisation terminee.")
 (defun SC3D:INFO-TAGS-OK-P (cam defs)
   ;; T si les attributs de cam sont exactement ceux des definitions defs.
   (equal
-    (mapcar '(lambda (a) (cdr (assoc 2 (entget a)))) (SC3D:INFO-ATTRIBS cam))
-    (mapcar 'car defs)
+    (mapcar '(lambda (a) (strcase (cdr (assoc 2 (entget a))))) (SC3D:INFO-ATTRIBS cam))
+    (mapcar '(lambda (d) (strcase (car d))) defs)
   )
 )
 
@@ -6903,6 +6923,9 @@ Actualisation terminee.")
       (if (SC3D:INFO-TAGS-OK-P cam defs)
         (progn
           (SC3D:INFO-SYNC cam)
+          ;; Attributs recrees par ATTSYNC : a surveiller de nouveau (cf.
+          ;; SC3D:INFO-WATCH, appele ensuite par SC3D:REGEN-CAMERAS).
+          (setq *SC3D_INFO_WATCHED* (vl-remove (cdr (assoc 5 ed)) *SC3D_INFO_WATCHED*))
           "ADDED"
         )
         "FAILED"
