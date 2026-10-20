@@ -1,4 +1,4 @@
-﻿(vl-load-com)
+(vl-load-com)
 (setq *SCRIPT_ID* "SNCF_Outils")
 (setq *S_SCRIPT_VERSION* "0.35")
 (princ (strcat "\nInformation: Script Outils SNCF développé par Dawson AILLAUD - SNCF Réseau TL MOB - Version " *S_SCRIPT_VERSION*))
@@ -4011,8 +4011,26 @@ Actualisation terminee.")
       (set_tile "r_vang" (strcat (rtos (cdr (assoc 'vAng calc)) 2 1) " deg"))
       (setq ppm (SC3D:PPM-AT-DIST maxD vals calc))
       (setq zone (if ppm (SC3D:PPM-ZONE ppm (cdr (assoc 'std vals))) nil))
-      (set_tile "r_ppm" (SC3D:PPM-MAX-TEXT ppm zone))
-      (set_tile "r_blind" (SC3D:BLIND-TEXT nearD farStart maxD))
+      (set_tile "r_ppm"
+        (cond
+          ((null ppm) "-")
+          (zone (strcat (rtos ppm 2 0) " (zone " (rtos zone 2 0) ")"))
+          (T (strcat (rtos ppm 2 0) " (hors zones)"))
+        )
+      )
+      (set_tile "r_blind"
+        (cond
+          ((and (<= nearD 0.0) (>= farStart maxD)) "aucune zone")
+          ((>= farStart maxD) (strcat "0 a " (rtos (SC3D:MIN nearD maxD) 2 1) " m"))
+          ((<= nearD 0.0) (strcat (rtos farStart 2 1) " a " (rtos maxD 2 1) " m"))
+          (T
+            (strcat
+              "0-" (rtos nearD 2 1) " et "
+              (rtos farStart 2 1) "-" (rtos maxD 2 1) " m"
+            )
+          )
+        )
+      )
       (setq range (SC3D:PRV-MAN-RANGE maxD camH aTop aBot))
       (set_tile "r_man"
         (if range
@@ -4484,11 +4502,7 @@ Actualisation terminee.")
   (setq lay (SC3D:CV-LAYER-NAME vals h))
   (SC3D:LAYER lay 2)
   (if (/= (strcase (cdr (assoc 8 ed))) (strcase lay))
-    (progn
-      (entmod (subst (cons 8 lay) (assoc 8 ed) ed))
-      ;; Attributs d'information : sur le calque de la camera (cf. SC3D:INFO-SYNC).
-      (SC3D:INFO-SYNC e)
-    )
+    (entmod (subst (cons 8 lay) (assoc 8 ed) ed))
   )
   lay
 )
@@ -6121,9 +6135,7 @@ Actualisation terminee.")
   (if (< trans 0.0) (setq trans 0.0))
   (if (> trans 90.0) (setq trans 90.0))
 
-  (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 2) '(10 0.0 0.0 0.0)))
-  ;; Informations du panneau Proprietes, en tete du bloc.
-  (SC3D:INFO-ATTDEFS vals calc)
+  (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
 
   (if hidden
     ;; Camera masquee : seules les zones non visibles (angle mort pres de la
@@ -6420,9 +6432,7 @@ Actualisation terminee.")
   (if (< trans 0.0) (setq trans 0.0))
   (if (> trans 90.0) (setq trans 90.0))
 
-  (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 2) '(10 0.0 0.0 0.0)))
-  ;; Informations du panneau Proprietes, en tete du bloc.
-  (SC3D:INFO-ATTDEFS vals calc)
+  (entmake (list '(0 . "BLOCK") (cons 2 blockName) '(70 . 0) '(10 0.0 0.0 0.0)))
 
   (if hidden
     ;; Camera masquee : seules les zones non visibles (angle mort pres de la
@@ -6591,449 +6601,6 @@ Actualisation terminee.")
   )
 )
 
-;; ------------------------------------------------------------------------------------
-;; INFORMATIONS DU CHAMP DE VISION DANS LE PANNEAU PROPRIETES
-;;
-;; BricsCAD ne permet pas d'ajouter de proprietes au panneau Proprietes en
-;; LISP : les informations du champ de vision (camera, optique, angles,
-;; inclinaison, distances, zones PPM...) y sont affichees comme attributs de
-;; l'INSERT camera (section Attributs), invisibles dans le dessin.
-;;
-;; Lecture seule : la camera se modifie avec S_CAMERA > Modifier. Les valeurs
-;; sont celles des definitions d'attributs (ATTDEF) placees en tete du bloc
-;; camera, recalculees a chaque (re)definition du bloc ; les attributs de
-;; l'INSERT n'en sont que la copie (cf. SC3D:INFO-SYNC). Une valeur changee a
-;; la main (panneau Proprietes, ATTEDIT...) est remise a la fin de la commande,
-;; ou hors commande au changement de selection suivant (le panneau Proprietes
-;; ne declenche aucune fin de commande) : un attribut ne peut pas etre modifie
-;; pendant sa propre notification.
-;; ------------------------------------------------------------------------------------
-
-(setq *SC3D_INFO_TEXTH* 0.1)
-;; Attributs (objets VLA) modifies depuis le dernier controle.
-;; (*SC3D_INFO_OBJ_REACTOR*, *SC3D_INFO_SEL_REACTOR* et *SC3D_INFO_WATCHED* ne
-;; sont volontairement pas reinitialises ici : recharger le script ne doit pas
-;; creer de reacteurs en double.)
-(setq *SC3D_INFO_PENDING* nil)
-
-(defun SC3D:INFO-STR (s)
-  (if (and s (/= s "")) s "-")
-)
-
-(defun SC3D:BLIND-TEXT (nearD farStart maxD)
-  ;; Zones non visibles : pres de la camera, et au loin si la cible sort de
-  ;; l'image par le haut (cf. SC3D:FAR-BAND-START).
-  (cond
-    ((and (<= nearD 0.0) (>= farStart maxD)) "aucune zone")
-    ((>= farStart maxD) (strcat "0 a " (rtos (SC3D:MIN nearD maxD) 2 1) " m"))
-    ((<= nearD 0.0) (strcat (rtos farStart 2 1) " a " (rtos maxD 2 1) " m"))
-    (T
-      (strcat
-        "0-" (rtos nearD 2 1) " et "
-        (rtos farStart 2 1) "-" (rtos maxD 2 1) " m"
-      )
-    )
-  )
-)
-
-(defun SC3D:PPM-MAX-TEXT (ppm zone)
-  ;; PPM a la distance max (nil = incalculable) et sa zone (nil = hors zones).
-  (cond
-    ((null ppm) "-")
-    (zone (strcat (rtos ppm 2 0) " (zone " (rtos zone 2 0) ")"))
-    (T (strcat (rtos ppm 2 0) " (hors zones)"))
-  )
-)
-
-(defun SC3D:PPM-ZONE-RANGES (vals calc / side resW tanH tanV tilt camH objH maxD nearD farD prev done ppm d x1 x2 out)
-  ;; Etendue de chaque zone PPM de la norme, telle que dessinee (meme calcul
-  ;; que SC3D:DRAW-PPM en vue du dessus, SC3D:SIDE-DRAW-PPM en vue de cote) :
-  ;; liste de (seuil debut . fin), ou (seuil) si la zone n'apparait pas.
-  (setq side (= (cdr (assoc 'view vals)) "SIDE"))
-  (setq resW  (cdr (assoc 'resW calc)))
-  (setq tanH  (cdr (assoc 'tanH calc)))
-  (setq tanV  (cdr (assoc 'tanV calc)))
-  (setq tilt  (cdr (assoc 'tilt calc)))
-  (setq nearD (cdr (assoc 'nearD calc)))
-  (setq farD  (cdr (assoc 'farD calc)))
-  (setq camH  (cdr (assoc 'camh vals)))
-  (setq objH  (cdr (assoc 'objh vals)))
-  (setq maxD  (cdr (assoc 'dist vals)))
-  (setq prev 0.0)
-
-  (foreach z (SC3D:PPM-LIST (cdr (assoc 'std vals)))
-    (setq ppm (nth 0 z))
-    (if done
-      (setq out (cons (list ppm) out))
-      (progn
-        (setq d
-          (if side
-            (SC3D:PPM-DIST ppm resW tanH tanV tilt camH objH maxD)
-            (SC3D:PPM-DIST-TOP-OLD ppm resW tanH tilt camH objH)
-          )
-        )
-        (setq x1 (SC3D:MAX prev nearD))
-        (setq x2 (SC3D:MIN d farD))
-        (setq out (cons (if (> x2 x1) (cons ppm (cons x1 x2)) (list ppm)) out))
-        (if (>= d farD)
-          (setq done T)
-          (setq prev d)
-        )
-      )
-    )
-  )
-  (reverse out)
-)
-
-(defun SC3D:INFO-LIST (vals calc / maxD nearD farD ppm zone)
-  ;; Informations du panneau Proprietes, dans l'ordre d'affichage : liste de
-  ;; (nom . valeur), le nom etant l'etiquette de l'attribut, affichee telle
-  ;; quelle dans le panneau (cf. SC3D:INFO-ATTDEFS). calc = (SC3D:CALC vals).
-  (setq maxD  (cdr (assoc 'dist vals)))
-  (setq nearD (cdr (assoc 'nearD calc)))
-  (setq farD  (cdr (assoc 'farD calc)))
-  (setq ppm (SC3D:PPM-AT-DIST maxD vals calc))
-  (setq zone (if ppm (SC3D:PPM-ZONE ppm (cdr (assoc 'std vals))) nil))
-
-  (append
-    (list
-      (cons "Nom du champ" (SC3D:INFO-STR (cdr (assoc 'cvname vals))))
-      (cons "Situation" (SC3D:SIT-CODE->LABEL (cdr (assoc 'situation vals))))
-      (cons "Vue" (SC3D:VIEW-CODE->LABEL (cdr (assoc 'view vals))))
-      (cons "Fabricant" (SC3D:INFO-STR (cdr (assoc 'manu vals))))
-      (cons "Modele" (SC3D:INFO-STR (cdr (assoc 'model vals))))
-      (cons "Capteur" (SC3D:INFO-STR (cdr (assoc 'fmt vals))))
-      (cons "Focale" (strcat (rtos (cdr (assoc 'focal vals)) 2 1) " mm"))
-      (cons "Resolution" (SC3D:INFO-STR (cdr (assoc 'res vals))))
-      (cons "Angle horizontal" (strcat (rtos (cdr (assoc 'hAng calc)) 2 1) "°"))
-      (cons "Angle vertical" (strcat (rtos (cdr (assoc 'vAng calc)) 2 1) "°"))
-      (cons "Inclinaison"
-        (strcat
-          (rtos (SC3D:RTD (cdr (assoc 'tilt calc))) 2 1) "°"
-          (if (= (cdr (assoc 'tilt_mode vals)) "AUTO") " (auto)" "")
-        )
-      )
-      (cons "Hauteur camera" (strcat (rtos (cdr (assoc 'camh vals)) 2 2) " m"))
-      (cons "Hauteur objectif" (strcat (rtos (cdr (assoc 'objh vals)) 2 2) " m"))
-      (cons "Distance max" (strcat (rtos maxD 2 2) " m"))
-      (cons "Largeur a la distance max" (strcat (rtos (cdr (assoc 'targetWidthMax calc)) 2 2) " m"))
-      (cons "PPM a la distance max" (SC3D:PPM-MAX-TEXT ppm zone))
-      (cons "Zone non visible" (SC3D:BLIND-TEXT nearD (SC3D:FAR-BAND-START nearD farD maxD) maxD))
-      (cons "Norme DORI" (SC3D:INFO-STR (cdr (assoc 'std vals))))
-    )
-    (mapcar
-      '(lambda (z)
-        (cons
-          (strcat "Zone PPM " (rtos (car z) 2 0))
-          (if (cdr z)
-            (strcat (rtos (cadr z) 2 1) " a " (rtos (cddr z) 2 1) " m")
-            "-"
-          )
-        )
-      )
-      (SC3D:PPM-ZONE-RANGES vals calc)
-    )
-  )
-)
-
-(defun SC3D:INFO-SAFE-TAG (s)
-  ;; Etiquette d'attribut "classique" (majuscules, sans espace ni point).
-  (SC3D:REPL (SC3D:REPL (strcase s) " " "_") "." "")
-)
-
-(defun SC3D:INFO-ATTDEF-DXF (tag prompt val)
-  (list
-    '(0 . "ATTDEF")
-    '(8 . "0")
-    '(10 0.0 0.0 0.0)
-    (cons 40 *SC3D_INFO_TEXTH*)
-    (cons 1 val)
-    '(7 . "STANDARD")
-    (cons 3 prompt)
-    (cons 2 tag)
-    '(70 . 9)
-  )
-)
-
-(defun SC3D:INFO-ATTDEFS (vals calc / lst)
-  ;; Definitions d'attributs du bloc camera en cours de definition, a creer
-  ;; juste apres son en-tete BLOCK (cf. SC3D:INFO-BLOCK-DEFAULTS) : invisibles,
-  ;; predefinies (aucune question a l'insertion), valeur par defaut = valeur
-  ;; actuelle. Une erreur de calcul ne doit pas empecher de dessiner la camera :
-  ;; elle n'a alors simplement pas d'informations.
-  ;; L'etiquette est le nom lisible ("Nom du champ"), que le panneau Proprietes
-  ;; affiche ; la commande ATTDEF n'en accepterait pas (espaces), entmake si.
-  ;; Refusee malgre tout : etiquette classique ("NOM_DU_CHAMP").
-  (setq lst (vl-catch-all-apply 'SC3D:INFO-LIST (list vals calc)))
-  (if (not (vl-catch-all-error-p lst))
-    (foreach a lst
-      (if (not (entmake (SC3D:INFO-ATTDEF-DXF (car a) (car a) (cdr a))))
-        (entmake (SC3D:INFO-ATTDEF-DXF (SC3D:INFO-SAFE-TAG (car a)) (car a) (cdr a)))
-      )
-    )
-  )
-)
-
-(defun SC3D:INFO-BLOCK-DEFAULTS (blockName / e ed out)
-  ;; (ETIQUETTE . valeur) des definitions d'attributs en tete du bloc, etiquette
-  ;; en majuscules (comparaisons insensibles a la casse : BricsCAD peut la
-  ;; mettre en majuscules) ; nil pour un bloc camera d'une version precedente.
-  (setq e (cdr (assoc -2 (tblsearch "BLOCK" blockName))))
-  (while (and e (setq ed (entget e)) (= (cdr (assoc 0 ed)) "ATTDEF"))
-    (setq out (cons (cons (strcase (cdr (assoc 2 ed))) (cdr (assoc 1 ed))) out))
-    (setq e (entnext e))
-  )
-  (reverse out)
-)
-
-(defun SC3D:INFO-ATTRIBS (cam / e out)
-  ;; Attributs (ATTRIB) de l'INSERT cam.
-  (if (= (cdr (assoc 66 (entget cam))) 1)
-    (progn
-      (setq e (entnext cam))
-      (while (and e (= (cdr (assoc 0 (entget e))) "ATTRIB"))
-        (setq out (cons e out))
-        (setq e (entnext e))
-      )
-    )
-  )
-  (reverse out)
-)
-
-(defun SC3D:INFO-ENTMAKE-INSERT (dxf / defs lay base rot ok)
-  ;; Cree l'INSERT camera decrit par dxf, avec un attribut invisible par
-  ;; definition d'attribut de son bloc. Bloc sans definitions, ou echec :
-  ;; INSERT simple, sans informations. Renvoie l'INSERT.
-  (setq defs (SC3D:INFO-BLOCK-DEFAULTS (cdr (assoc 2 dxf))))
-  (setq lay (cdr (assoc 8 dxf)))
-  (setq base (cdr (assoc 10 dxf)))
-  (setq rot (if (assoc 50 dxf) (cdr (assoc 50 dxf)) 0.0))
-
-  (if defs
-    (setq ok (entmake (append dxf '((66 . 1)))))
-  )
-  (foreach d defs
-    (if ok
-      (setq ok
-        (entmake
-          (list
-            '(0 . "ATTRIB")
-            (cons 8 lay)
-            (cons 10 base)
-            (cons 40 *SC3D_INFO_TEXTH*)
-            (cons 1 (cdr d))
-            (cons 50 rot)
-            '(7 . "STANDARD")
-            (cons 2 (car d))
-            '(70 . 1)
-          )
-        )
-      )
-    )
-  )
-
-  (if (and ok (entmake '((0 . "SEQEND"))))
-    (entlast)
-    (progn
-      ;; Entite complexe en cours abandonnee (entmake sans argument).
-      (if defs (vl-catch-all-apply 'entmake nil))
-      (entmakex dxf)
-    )
-  )
-)
-
-(defun SC3D:INFO-SYNC (cam / ed lay defs sed val n)
-  ;; Remet les attributs de la camera cam a la valeur de la definition de son
-  ;; bloc, invisibles et sur le calque de l'INSERT. N'ecrit que ce qui differe ;
-  ;; renvoie le nombre d'attributs corriges.
-  (setq ed (entget cam))
-  (setq lay (cdr (assoc 8 ed)))
-  (setq defs (SC3D:INFO-BLOCK-DEFAULTS (cdr (assoc 2 ed))))
-  (setq n 0)
-  (foreach a (SC3D:INFO-ATTRIBS cam)
-    (setq sed (entget a))
-    (setq val (cdr (assoc (cdr (assoc 2 sed)) defs)))
-    (if
-      (and
-        val
-        (or
-          (/= (cdr (assoc 1 sed)) val)
-          (/= (strcase (cdr (assoc 8 sed))) (strcase lay))
-          (= (logand (cdr (assoc 70 sed)) 1) 0)
-        )
-      )
-      (progn
-        (setq sed (SC3D:DXF-PUT sed 1 val))
-        (setq sed (SC3D:DXF-PUT sed 8 lay))
-        (setq sed (SC3D:DXF-PUT sed 70 (logior (cdr (assoc 70 sed)) 1)))
-        (if (entmod sed) (setq n (+ n 1)))
-      )
-    )
-  )
-  (if (> n 0) (entupd cam))
-  n
-)
-
-(defun SC3D:INFO-TAGS-OK-P (cam defs)
-  ;; T si les attributs de cam sont exactement ceux des definitions defs.
-  (equal
-    (mapcar '(lambda (a) (cdr (assoc 2 (entget a)))) (SC3D:INFO-ATTRIBS cam))
-    (mapcar 'car defs)
-  )
-)
-
-(defun SC3D:INFO-ADD-ATTRIBS (cam / ed name defs echo)
-  ;; Camera d'une version precedente : son bloc, redefini par
-  ;; SC3D:REGEN-CAMERA-GEOM, a les definitions d'attributs actuelles, mais
-  ;; l'INSERT n'a pas les attributs correspondants (aucun, ou une liste
-  ;; d'informations differente) et entmod ne peut pas en ajouter ni en retirer.
-  ;; ATTSYNC les met en accord sans recreer la camera : handle, ordre de trace
-  ;; et liens (repere nom, calque dedie) conserves. Uniquement dans une
-  ;; commande, hors boite de dialogue et hors reacteur ((command) y est
-  ;; interdit).
-  ;; Renvoie "ADDED", "FAILED", ou nil (attributs deja a jour, ou rien a faire).
-  (setq ed (entget cam))
-  (setq name (cdr (assoc 2 ed)))
-  (setq defs (SC3D:INFO-BLOCK-DEFAULTS name))
-  (if (and defs (not (SC3D:INFO-TAGS-OK-P cam defs)))
-    (progn
-      (setq echo (getvar "CMDECHO"))
-      (setvar "CMDECHO" 0)
-      (vl-catch-all-apply
-        '(lambda (/ i)
-          (command "_.ATTSYNC" "_Name" name)
-          ;; Questions restantes (confirmation, autre nom de bloc...) : reponse
-          ;; par defaut. Commande encore active apres cela : annulee.
-          (setq i 0)
-          (while (and (> (logand (getvar "CMDACTIVE") 1) 0) (< i 5))
-            (command "")
-            (setq i (+ i 1))
-          )
-          (if (> (logand (getvar "CMDACTIVE") 1) 0) (command))
-        )
-        nil
-      )
-      (setvar "CMDECHO" echo)
-      (if (SC3D:INFO-TAGS-OK-P cam defs)
-        (progn
-          (SC3D:INFO-SYNC cam)
-          "ADDED"
-        )
-        "FAILED"
-      )
-    )
-    nil
-  )
-)
-
-;; ---------------------------------------------------------------- lecture seule
-
-(defun SC3D:INFO-WATCH (cam / h objs)
-  ;; Ajoute les attributs de la camera cam aux objets surveilles (cf.
-  ;; SC3D:INFO-ON-MODIFIED). Jamais pendant une notification du reacteur
-  ;; d'objets lui-meme.
-  (if (and cam (entget cam))
-    (progn
-      (setq h (cdr (assoc 5 (entget cam))))
-      (if (not (member h *SC3D_INFO_WATCHED*))
-        (progn
-          (setq objs (mapcar 'vlax-ename->vla-object (SC3D:INFO-ATTRIBS cam)))
-          (if objs
-            (progn
-              (if *SC3D_INFO_OBJ_REACTOR*
-                (foreach o objs (vlr-owner-add *SC3D_INFO_OBJ_REACTOR* o))
-                (setq *SC3D_INFO_OBJ_REACTOR*
-                  (vlr-object-reactor objs nil '((:vlr-modified . SC3D:INFO-ON-MODIFIED)))
-                )
-              )
-              (setq *SC3D_INFO_WATCHED* (cons h *SC3D_INFO_WATCHED*))
-            )
-          )
-        )
-      )
-    )
-  )
-)
-
-(defun SC3D:INFO-ON-MODIFIED (obj reactor params)
-  ;; Attribut modifie (panneau Proprietes, ATTEDIT, camera deplacee...) : note
-  ;; seulement, il ne peut pas etre remis pendant sa propre notification (cf.
-  ;; SC3D:INFO-RESTORE-PENDING). Nos propres modifications (verrou
-  ;; *SC3D_LBL_BUSY*) sont ignorees.
-  (if (not *SC3D_LBL_BUSY*)
-    (setq *SC3D_INFO_PENDING* (cons obj *SC3D_INFO_PENDING*))
-  )
-)
-
-(defun SC3D:INFO-RESTORE-PENDING (/ objs cams cam)
-  ;; Remet les valeurs des cameras dont un attribut a ete modifie (sans effet
-  ;; si rien n'a change, apres un deplacement par exemple). Une camera qui n'a
-  ;; pas pu etre corrigee reste en attente du prochain controle.
-  (setq objs *SC3D_INFO_PENDING*)
-  (setq *SC3D_INFO_PENDING* nil)
-  (foreach o objs
-    (setq cam
-      (vl-catch-all-apply
-        '(lambda ()
-          (if (not (vlax-erased-p o))
-            (cdr (assoc 330 (entget (vlax-vla-object->ename o))))
-          )
-        )
-        nil
-      )
-    )
-    (if (and cam (not (vl-catch-all-error-p cam)) (not (member cam cams)))
-      (setq cams (cons cam cams))
-    )
-  )
-  (foreach cam cams
-    (if (and (SC3D:CAMERA-INSERT-P cam)
-             (vl-catch-all-error-p (vl-catch-all-apply 'SC3D:INFO-SYNC (list cam))))
-      (setq *SC3D_INFO_PENDING*
-        (append (mapcar 'vlax-ename->vla-object (SC3D:INFO-ATTRIBS cam)) *SC3D_INFO_PENDING*)
-      )
-    )
-  )
-)
-
-(defun SC3D:INFO-AFTER-COMMAND (ents)
-  ;; Fin de commande (cf. SC3D:LBL-AFTER-COMMAND) : cameras creees par la
-  ;; commande (copie, collage...) surveillees, valeurs modifiees remises.
-  (foreach e ents
-    (if (SC3D:CAMERA-INSERT-P e)
-      (SC3D:INFO-WATCH e)
-    )
-  )
-  (SC3D:INFO-RESTORE-PENDING)
-)
-
-(defun SC3D:INFO-ON-PICKFIRST (reactor params)
-  ;; Changement de selection hors commande : valeurs saisies dans le panneau
-  ;; Proprietes remises.
-  (if (and *SC3D_INFO_PENDING*
-           (not *SC3D_LBL_BUSY*)
-           (= (logand (getvar "CMDACTIVE") 1) 0))
-    (SC3D:LBL-LOCKED-CALL 'SC3D:INFO-RESTORE-PENDING nil)
-  )
-)
-
-(defun SC3D:INFO-START ()
-  ;; Comme les reacteurs des reperes nom (cf. SC3D:LBL-START), recrees a chaque
-  ;; chargement du script pour les cameras deja presentes. La fin de commande
-  ;; passe par le reacteur de commandes des reperes (cf. SC3D:LBL-ON-COMMAND).
-  (if (not *SC3D_INFO_SEL_REACTOR*)
-    (setq *SC3D_INFO_SEL_REACTOR*
-      (vlr-miscellaneous-reactor
-        nil
-        '((:vlr-pickfirstModified . SC3D:INFO-ON-PICKFIRST))
-      )
-    )
-  )
-  (foreach cam (SC3D:SSGET-CAMERAS "_X")
-    (SC3D:INFO-WATCH cam)
-  )
-)
-
 (defun SC3D:REGEN-VIEW ()
   ;; Regen via l'API ActiveX (SC3D:ACAD-DOC) plutot que la commande REGEN :
   ;; (command ...) ne peut pas etre invoque tant qu'une boite de dialogue DCL
@@ -7062,9 +6629,8 @@ Actualisation terminee.")
 
   (SC3D:CREATE-BLOCK-GEOM blockName vals calc)
 
-  ;; Avec les attributs d'information du panneau Proprietes (cf. SC3D:INFO-ENTMAKE-INSERT).
   (setq ins
-    (SC3D:INFO-ENTMAKE-INSERT
+    (entmakex
       (list
         '(0 . "INSERT")
         (cons 8 camLayer)
@@ -7087,8 +6653,6 @@ Actualisation terminee.")
   (setq cfg (SC3D:CFG-STR vals ""))
 
   (SC3D:SET-XDATA ins cfg)
-  ;; Valeur saisie a la main dans le panneau Proprietes : remise (lecture seule).
-  (SC3D:INFO-WATCH ins)
 
   (SC3D:REGEN-VIEW)
 
@@ -7118,9 +6682,8 @@ Actualisation terminee.")
 
   (SC3D:CREATE-BLOCK-GEOM-SIDE blockName vals calc)
 
-  ;; Avec les attributs d'information du panneau Proprietes (cf. SC3D:INFO-ENTMAKE-INSERT).
   (setq ins
-    (SC3D:INFO-ENTMAKE-INSERT
+    (entmakex
       (list
         '(0 . "INSERT")
         (cons 8 camLayer)
@@ -7143,8 +6706,6 @@ Actualisation terminee.")
   (setq cfg (SC3D:CFG-STR vals ""))
 
   (SC3D:SET-XDATA ins cfg)
-  ;; Valeur saisie a la main dans le panneau Proprietes : remise (lecture seule).
-  (SC3D:INFO-WATCH ins)
 
   (SC3D:REGEN-VIEW)
 
@@ -8049,7 +7610,6 @@ Actualisation terminee.")
         (SC3D:SET-CLIP-XDATA e active localPts)
         (SC3D:CLEAR-CLIP-XDATA e)
       )
-      (SC3D:INFO-SYNC e)
 
       (SC3D:REGEN-VIEW)
       T
@@ -8093,9 +7653,6 @@ Actualisation terminee.")
 
       (setq *SC3D_CLIP_POLY* nil)
       (setq *SC3D_CLIP_TRIS* nil)
-
-      ;; Informations du panneau Proprietes recalculees avec le bloc.
-      (SC3D:INFO-SYNC e)
 
       T
     )
@@ -8269,33 +7826,12 @@ Actualisation terminee.")
 ;; rotation, ajustement et visibilite sont conserves.
 ;; ------------------------------------------------------------------------------------
 
-(defun SC3D:REGEN-CAMERAS (ents / n added failed r)
-  ;; Nombre de cameras de ents regenerees. Les cameras d'une version
-  ;; precedente recoivent au passage les informations du panneau Proprietes
-  ;; (cf. SC3D:INFO-ADD-ATTRIBS).
-  (setq n 0 added 0 failed 0)
+(defun SC3D:REGEN-CAMERAS (ents / n)
+  ;; Nombre de cameras de ents regenerees.
+  (setq n 0)
   (foreach e ents
     (if (SC3D:REGEN-CAMERA-GEOM e)
-      (progn
-        (setq n (+ n 1))
-        (setq r (SC3D:INFO-ADD-ATTRIBS e))
-        (cond
-          ((= r "ADDED") (setq added (+ added 1)))
-          ((= r "FAILED") (setq failed (+ failed 1)))
-        )
-        (SC3D:INFO-WATCH e)
-      )
-    )
-  )
-  (if (> added 0)
-    (princ (strcat "\nInformations du panneau Proprietes mises a jour sur " (itoa added) " camera(s)."))
-  )
-  (if (> failed 0)
-    (princ
-      (strcat
-        "\n" (itoa failed) " camera(s) sans informations dans le panneau Proprietes"
-        " (ATTSYNC impossible) : les recreer avec S_CAMERA > Modifier."
-      )
+      (setq n (+ n 1))
     )
   )
   n
@@ -8913,8 +8449,6 @@ Actualisation terminee.")
   (if (or (SC3D:LBL-FIX-COPIES ents) dirty)
     (SC3D:LBL-REFRESH-ALL T)
   )
-  ;; Informations du panneau Proprietes (lecture seule).
-  (SC3D:INFO-AFTER-COMMAND ents)
 )
 
 (defun SC3D:LBL-LOCKED-CALL (fn args / r)
@@ -8972,16 +8506,13 @@ Actualisation terminee.")
     (*SC3D_LBL_BUSY* nil)
     ((member cmd *SC3D_LBL_UNDO_CMDS*)
       (setq *SC3D_LBL_DIRTY* nil)
-      ;; Valeurs des attributs d'information restaurees par l'annulation avec
-      ;; la configuration de la camera : laissees telles quelles.
-      (setq *SC3D_INFO_PENDING* nil)
       (SC3D:LBL-SET-MARK)
     )
     (T
       (setq ents (SC3D:LBL-NEW-ENTS))
       (setq dirty *SC3D_LBL_DIRTY*)
       (setq *SC3D_LBL_DIRTY* nil)
-      (if (or ents dirty *SC3D_INFO_PENDING*)
+      (if (or ents dirty)
         (SC3D:LBL-LOCKED-CALL 'SC3D:LBL-AFTER-COMMAND (list ents dirty))
         (SC3D:LBL-SET-MARK)
       )
@@ -10783,10 +10314,6 @@ Actualisation terminee.")
 ;; Reperes "nom du champ de vision" : reacteurs qui gardent le trait relie a la
 ;; camera (cf. SC3D:LBL-START), jamais bloquants pour le chargement du script.
 (vl-catch-all-apply 'SC3D:LBL-START nil)
-
-;; Informations du champ de vision dans le panneau Proprietes : reacteurs qui
-;; les gardent en lecture seule (cf. SC3D:INFO-START), jamais bloquants non plus.
-(vl-catch-all-apply 'SC3D:INFO-START nil)
 
 ;; Variables du registre laissees a 0 par un export interrompu (cf.
 ;; SC3D:EXPORT-BEGIN) : restaurees au chargement.
@@ -15754,6 +15281,5 @@ Image source utilisee : " path))
 
 (stab_regapp)
 (stab_start_reactor)
-
 
 
